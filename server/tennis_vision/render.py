@@ -77,7 +77,9 @@ class _Writer:
             self.cv.release()
 
 
-def render_overlay(video_path: str, report: dict, out_path: str) -> str:
+def render_overlay(video_path: str, report: dict, out_path: str, show_score: bool = True) -> str:
+    """Draw the report onto the video. `show_score=False` leaves out the scoreboard and
+    point results, for clips cut out of a longer match where the score is unknown."""
     cap = cv2.VideoCapture(video_path)
     fps = report["video"]["fps"]
     ok, frame = cap.read()
@@ -125,8 +127,9 @@ def render_overlay(video_path: str, report: dict, out_path: str) -> str:
 
         done = [p for p in points if p["end_t"] <= t]
         score = done[-1]["score_after"] if done else None
-        _scoreboard(frame, score, names, s)
-        if done and t - done[-1]["end_t"] < RESULT_SECONDS:
+        if show_score:
+            _scoreboard(frame, score, names, s)
+        if show_score and done and t - done[-1]["end_t"] < RESULT_SECONDS:
             p = done[-1]
             who = f"{names[p['winner']]} WINS POINT - " if p["winner"] else ""
             speed = f"  serve {p['serve_speed_kmh']:.0f} km/h" if p.get("serve_speed_kmh") else ""
@@ -187,9 +190,10 @@ def main() -> None:
     ap.add_argument("video")
     ap.add_argument("report")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--no-score", action="store_true", help="draw only the ball, court and calls")
     args = ap.parse_args()
     out = args.out or str(Path(args.video).with_name(Path(args.video).stem + "_analyzed.mp4"))
-    render_overlay(args.video, json.loads(Path(args.report).read_text()), out)
+    render_overlay(args.video, json.loads(Path(args.report).read_text()), out, show_score=not args.no_score)
     print(out)
 
 
