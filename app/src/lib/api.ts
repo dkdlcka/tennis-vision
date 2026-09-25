@@ -1,4 +1,4 @@
-import type { AnalysisOptions, AnalysisStatus, Point2 } from './types';
+import type { AnalysisOptions, AnalysisStatus, Point2, RallyJob } from './types';
 
 function fileField(uri: string, name: string, type: string) {
   // React Native's FormData accepts a file reference in this shape.
@@ -35,4 +35,24 @@ export async function getAnalysis(server: string, id: string): Promise<AnalysisS
   const res = await fetch(`${server}/analyses/${id}`);
   if (!res.ok) throw new Error(`분석 상태 조회 실패 (${res.status})`);
   return res.json();
+}
+
+/** Uploads a match video; the server cuts it down to its points and tracks the ball. */
+export async function startRallies(server: string, videoUri: string, mimeType: string | undefined): Promise<string> {
+  const body = new FormData();
+  const ext = mimeType?.includes('quicktime') ? 'mov' : 'mp4';
+  body.append('video', fileField(videoUri, `match.${ext}`, mimeType ?? 'video/mp4'));
+  const res = await fetch(`${server}/rallies`, { method: 'POST', body });
+  if (!res.ok) throw new Error(`업로드 실패 (${res.status}): ${await res.text()}`);
+  return (await res.json()).id as string;
+}
+
+export async function getRallies(server: string, id: string): Promise<RallyJob> {
+  const res = await fetch(`${server}/rallies/${id}`);
+  if (!res.ok) throw new Error(`상태 조회 실패 (${res.status})`);
+  return res.json();
+}
+
+export function ralliesVideoUrl(server: string, id: string): string {
+  return `${server}/rallies/${id}/video`;
 }

@@ -3,11 +3,13 @@ import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import { getHistory, getServerUrl, HistoryItem, setServerUrl } from '../lib/storage';
+import { startRallies } from '../lib/api';
+import { addHistory, getHistory, getServerUrl, HistoryItem, setServerUrl } from '../lib/storage';
 
 export default function Home() {
   const [server, setServer] = useState('');
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [uploading, setUploading] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -36,6 +38,33 @@ export default function Home() {
     });
   }
 
+  async function pickForRallies() {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert('권한이 필요해요', '사진 보관함 권한을 허용해 주세요.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['videos'], quality: 1 });
+    if (result.canceled || !result.assets[0]) return;
+    const a = result.assets[0];
+    setUploading(true);
+    try {
+      const id = await startRallies(await getServerUrl(), a.uri, a.mimeType ?? undefined);
+      await addHistory({
+        id,
+        videoUri: a.uri,
+        createdAt: new Date().toISOString(),
+        title: `랠리 하이라이트 · ${a.fileName ?? '경기 영상'}`,
+        kind: 'rallies',
+      });
+      router.push({ pathname: '/rallies/[id]', params: { id } });
+    } catch (e) {
+      Alert.alert('업로드 실패', (e as Error).message);
+    } finally {
+      setUploading(false);
+    }
+  }
+
   return (
     <ScrollView contentContainerStyle={styles.page}>
       <Text style={styles.h1}>내 테니스 영상 분석</Text>
@@ -47,6 +76,21 @@ export default function Home() {
         </Pressable>
         <Pressable style={styles.button} onPress={() => pick(true)}>
           <Text style={styles.buttonText}>바로 촬영</Text>
+        </Pressable>
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.h2}>경기 영상에서 랠리만 뽑기</Text>
+        <Text style={styles.body}>
+          중계 영상이나 긴 경기 영상을 올리면 코트가 보이는 화면에서 포인트만 골라, 서브부터 공을 따라가며 바운스(인/아웃)와
+          샷 속도를 표시한 하이라이트 영상을 만들어요.
+        </Text>
+        <Pressable
+          style={[styles.button, styles.primary, { marginTop: 10 }, uploading && { opacity: 0.6 }]}
+          disabled={uploading}
+          onPress={pickForRallies}
+        >
+          <Text style={styles.primaryText}>{uploading ? '업로드 중...' : '영상 올리기'}</Text>
         </Pressable>
       </View>
 
@@ -81,7 +125,11 @@ export default function Home() {
             <Pressable
               key={h.id}
               style={styles.historyRow}
-              onPress={() => router.push({ pathname: '/analysis/[id]', params: { id: h.id, uri: h.videoUri } })}
+              onPress={() =>
+                h.kind === 'rallies'
+                  ? router.push({ pathname: '/rallies/[id]', params: { id: h.id } })
+                  : router.push({ pathname: '/analysis/[id]', params: { id: h.id, uri: h.videoUri } })
+              }
             >
               <Text style={styles.body}>{h.title}</Text>
               <Text style={styles.muted}>{new Date(h.createdAt).toLocaleString()}</Text>

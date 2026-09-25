@@ -217,13 +217,18 @@ class _Stabilizer:
 
 
 def track_shot(
-    cap: cv2.VideoCapture, shot: CourtShot, size: tuple[int, int], detector=None
-) -> tuple[np.ndarray, CourtHomography, float]:
+    cap: cv2.VideoCapture,
+    shot: CourtShot,
+    size: tuple[int, int],
+    detector=None,
+    progress: Callable[[float], None] | None = None,
+) -> tuple[np.ndarray, CourtHomography, float, list[np.ndarray]]:
     """Ball track through one court shot, stabilized to the shot's first frame.
 
     `detector` defaults to `MovingCameraDetector`; a `tracknet.TrackNetDetector`
     is far more reliable. Returns (track, court homography of the first frame,
-    fraction of frames that could be mapped onto the first frame).
+    fraction of frames that could be mapped onto the first frame, and for each
+    tracked frame the homography mapping it onto the first frame).
     """
     cap.set(cv2.CAP_PROP_POS_FRAMES, shot.start)
     ref = CourtHomography(shot.corners)
@@ -235,7 +240,10 @@ def track_shot(
     stabilizer = None
     prev_to_ref = None
     followed = 0
+    to_refs: list[np.ndarray] = []
     for i in range(n):
+        if progress and i % 30 == 0:
+            progress(i / max(1, n))
         ok, raw = cap.read()
         if not ok:
             n = i
@@ -252,6 +260,7 @@ def track_shot(
             n = i
             break
         followed += 1
+        to_refs.append(to_ref)
         motion = None if prev_to_ref is None else np.linalg.inv(to_ref) @ prev_to_ref
         prev_to_ref = to_ref
         hom = CourtHomography(CourtHomography._apply(np.linalg.inv(to_ref), ref.image_corners))
@@ -264,7 +273,7 @@ def track_shot(
             for c, (x, y) in zip(cands, pts):
                 c.x, c.y = float(x), float(y)
         tracker.update(i, cands)
-    return tracker.result(n), ref, followed / max(1, shot.end - shot.start)
+    return tracker.result(n), ref, followed / max(1, shot.end - shot.start), to_refs
 
 
 def _shift(rally: Rally, offset: int) -> Rally:
@@ -303,7 +312,7 @@ def analyze_broadcast(
     rallies: list[Rally] = []
     shot_out = []
     for k, shot in enumerate(shots):
-        track, ref, followed = track_shot(cap, shot, size, detector)
+        track, ref, followed, _ = track_shot(cap, shot, size, detector)
         found = [_shift(r, shot.start) for r in find_rallies(track, ref, fps, size, method="2d")]
         rallies.extend(found)
         shot_out.append(

@@ -9,6 +9,7 @@ export default function RootLayout() {
         <Stack.Screen name="index" options={{ title: 'Tennis Vision' }} />
         <Stack.Screen name="setup" options={{ title: '분석 준비' }} />
         <Stack.Screen name="analysis/[id]" options={{ title: '분석 결과' }} />
+        <Stack.Screen name="rallies/[id]" options={{ title: '랠리 하이라이트' }} />
       </Stack>
     </>
   );

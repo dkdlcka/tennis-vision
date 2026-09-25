@@ -10,6 +10,7 @@ export interface HistoryItem {
   videoUri: string;
   createdAt: string;
   title: string;
+  kind?: 'match' | 'rallies'; // older entries are match analyses
 }
 
 export async function getServerUrl(): Promise<string> {

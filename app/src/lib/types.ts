@@ -110,3 +110,45 @@ export type AnalysisStatus =
   | { id: string; status: 'queued' | 'running'; progress: number }
   | { id: string; status: 'done'; progress: number; report: Report }
   | { id: string; status: 'error'; progress: number; error: string; message: string };
+
+// Rally highlights (server/tennis_vision/highlights.py).
+
+export interface RallyBounce {
+  clip_t: number; // seconds into the highlight video
+  source_t: number; // seconds into the uploaded video
+  court_xy: Point2;
+  in: boolean;
+  serve: boolean; // where the serve landed (judged against the service boxes)
+  speed_kmh: number | null; // estimated speed off the racket of the shot that landed here
+}
+
+export interface RallyPoint {
+  index: number;
+  clip_start_t: number;
+  clip_end_t: number;
+  source_start_t: number;
+  source_end_t: number;
+  serve_seen: boolean;
+  serve_speed_kmh: number | null;
+  shots: number;
+  bounces: RallyBounce[];
+}
+
+export interface RallyReport {
+  video: { fps: number; width: number; height: number; court_shots: number; tracker: 'tracknet' | 'motion' };
+  points: RallyPoint[];
+  stats: {
+    points: number;
+    highlight_s: number;
+    bounces: number;
+    bounces_in: number;
+    serve_speed_max_kmh: number | null;
+    serve_speed_avg_kmh: number | null;
+    shot_speed_avg_kmh: number | null;
+  };
+}
+
+export type RallyJob =
+  | { id: string; status: 'queued' | 'running'; progress: number; stage: string }
+  | { id: string; status: 'done'; progress: number; stage: string; report: RallyReport }
+  | { id: string; status: 'error'; progress: number; error: string; message: string };

@@ -1,19 +1,27 @@
 import Svg, { Circle, Line, Rect } from 'react-native-svg';
 
 import { COURT, COURT_LINES } from '../lib/court';
-import type { Bounce } from '../lib/types';
+import type { Point2 } from '../lib/types';
 
-interface Props {
-  bounces: Bounce[];
+/** Anything with a landing spot: a match bounce or a rally bounce. */
+export interface CourtMark {
+  id: number;
+  court_xy: Point2;
+  in: boolean;
+  hitter?: 'A' | 'B';
+}
+
+interface Props<T extends CourtMark> {
+  bounces: T[];
   width: number;
   highlight?: number | null;
-  colorFor?: (b: Bounce) => string;
+  colorFor?: (b: T) => string;
 }
 
 const PAD = 3; // meters of run-off drawn around the court
 
 /** Top-down court with every bounce: filled when in, hollow when out. */
-export function CourtDiagram({ bounces, width, highlight, colorFor }: Props) {
+export function CourtDiagram<T extends CourtMark>({ bounces, width, highlight, colorFor }: Props<T>) {
   const wM = COURT.doublesWidth + 2 * PAD;
   const hM = COURT.length + 2 * PAD;
   const s = width / wM;
@@ -21,7 +29,7 @@ export function CourtDiagram({ bounces, width, highlight, colorFor }: Props) {
   // Far half at the top, like the camera view.
   const X = (x: number) => (x + wM / 2) * s;
   const Y = (y: number) => (hM / 2 - y) * s;
-  const color = colorFor ?? ((b: Bounce) => (b.hitter === 'A' ? '#1e88e5' : '#e53935'));
+  const color = colorFor ?? ((b: T) => (b.hitter === 'B' ? '#e53935' : '#1e88e5'));
 
   return (
     <Svg width={width} height={height}>
