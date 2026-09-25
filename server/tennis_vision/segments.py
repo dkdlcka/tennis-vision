@@ -37,18 +37,22 @@ def find_court_segments(
     step_s: float = 0.5,
     min_len_s: float = 4.0,
     max_shift_frac: float = 0.05,
-    min_score: float = 0.6,
+    min_score: float = 0.9,
+    max_miss: int = 3,
 ) -> list[Segment]:
-    """Runs of sampled frames where the court appears at the dominant position.
+    """Runs of sampled frames showing the court from behind a baseline, holding still.
 
-    The main camera's court position is taken as the most common one among all
-    detections, so a replay from another angle or a zoomed shot is left out
-    even when a court is visible in it.
+    A sample counts when the court is found with a wide, level near baseline (the
+    usual main camera), and a run continues while the court stays within
+    `max_shift_frac` of the frame width of where the run has had it. Up to
+    `max_miss` samples in a row may fail (a player blocking a line) without
+    ending the run. The analysis follows small pans and zooms inside a clip.
     """
     cap = cv2.VideoCapture(path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     step = max(1, int(round(step_s * fps)))
     samples: list[tuple[float, np.ndarray | None]] = []
+    frame_w = frame_h = 0
     scale = 1.0
     f = -1
     while True:
@@ -61,24 +65,26 @@ def find_court_segments(
         ok, frame = cap.retrieve()
         if not ok:
             break
-        scale = min(1.0, SAMPLE_WIDTH / frame.shape[1])
+        frame_h, frame_w = frame.shape[:2]
+        scale = min(1.0, SAMPLE_WIDTH / frame_w)
         small = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else frame
         found = detect_court(small)
         corners = found[0].image_corners / scale if found and found[1] >= min_score else None
         samples.append((f / fps, corners))
     cap.release()
 
-    detected = [c for _, c in samples if c is not None]
-    if not detected:
-        return []
-    width = max(float(np.ptp(np.concatenate(detected)[:, 0])), 1.0)
-    tol = max_shift_frac * width
+    # Keep only the behind-the-baseline view: a wide, level near baseline. Side
+    # angles and replays from elsewhere in the stadium fail this even with a court found.
+    def main_view(c: np.ndarray | None) -> bool:
+        if c is None:
+            return False
+        near_w = c[1, 0] - c[0, 0]
+        level = abs(c[1, 1] - c[0, 1]) < 0.04 * frame_h and abs(c[2, 1] - c[3, 1]) < 0.04 * frame_h
+        return near_w > 0.4 * frame_w and level
 
-    # Dominant position: the detection with the most others within tolerance.
-    stack = np.array(detected)
-    dists = np.abs(stack[:, None] - stack[None]).max(axis=(2, 3))
-    ref = stack[int(np.argmax((dists < tol).sum(axis=1)))]
-
+    # A run lasts while the court stays put: the camera may zoom between points,
+    # so each run is compared with itself rather than one global position.
+    tol = max_shift_frac * frame_w
     segments: list[Segment] = []
     run: list[tuple[float, np.ndarray]] = []
 
@@ -87,12 +93,18 @@ def find_court_segments(
             corners = np.median(np.array([c for _, c in run]), axis=0)
             segments.append(Segment(run[0][0], run[-1][0] + step_s, corners.round(1).tolist()))
 
+    misses = 0
     for t, c in samples:
-        if c is not None and np.abs(c - ref).max() < tol:
+        if main_view(c) and (not run or np.abs(c - np.median([r for _, r in run], axis=0)).max() < tol):
             run.append((t, c))
-        else:
-            close_run()
-            run = []
+            misses = 0
+            continue
+        if run and misses < max_miss:
+            misses += 1
+            continue
+        close_run()
+        run = [(t, c)] if main_view(c) else []
+        misses = 0
     close_run()
     return segments
 

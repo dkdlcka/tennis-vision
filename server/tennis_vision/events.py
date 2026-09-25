@@ -245,6 +245,7 @@ def _events_in_run(
     valid = ~np.isnan(seg[:, 0])
     frames = np.arange(start, end)[valid].astype(np.float64)
     uv = seg[valid]
+    frames, uv = _drop_spikes(frames, uv)
     # Tracking glitches (a ghost, the shadow, a player's shoe) bend the arcs, so
     # drop points the fitted arcs disagree with strongly and segment again.
     for _ in range(3):
@@ -267,6 +268,28 @@ def _events_in_run(
     if landing is not None:
         events.append(landing)
     return events, arcs
+
+
+def _drop_spikes(frames: np.ndarray, uv: np.ndarray, spike_px: float = 5.0) -> tuple[np.ndarray, np.ndarray]:
+    """Remove single detections that jump off an otherwise smooth path.
+
+    A one-frame glitch (the ball merging with a line or a ghost) can look like a
+    contact to the arc segmentation, which then explains it with extra arcs
+    instead of rejecting it. Two points on each side that agree on a smooth
+    curve are enough to spot it; at a real contact they do not agree.
+    """
+    keep = np.ones(len(frames), bool)
+    for i in range(2, len(frames) - 2):
+        nb = np.array([i - 2, i - 1, i + 1, i + 2])
+        if frames[nb[-1]] - frames[nb[0]] > 6:
+            continue
+        t = frames[nb] - frames[i]
+        a = np.stack([np.ones(4), t, t**2], axis=1)
+        coef, *_ = np.linalg.lstsq(a, uv[nb], rcond=None)
+        fit_err = np.linalg.norm(a @ coef - uv[nb], axis=1).max()
+        if fit_err < 1.5 and np.linalg.norm(coef[0] - uv[i]) > max(spike_px, 4 * fit_err):
+            keep[i] = False
+    return frames[keep], uv[keep]
 
 
 def _landing_at_end(

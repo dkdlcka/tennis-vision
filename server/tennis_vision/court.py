@@ -149,16 +149,15 @@ class CourtCamera:
         t = np.array([[1, 0, -self.cx], [0, 1, -self.cy], [0, 0, 1.0]])
         h = t @ homography.court_to_image
         h1, h2, h3 = h[:, 0], h[:, 1], h[:, 2]
-        estimates = []
-        d1 = h1[2] * h2[2]
-        if abs(d1) > 1e-12:
-            estimates.append(-(h1[0] * h2[0] + h1[1] * h2[1]) / d1)
-        d2 = h1[2] ** 2 - h2[2] ** 2
-        if abs(d2) > 1e-12:
-            estimates.append(-(h1[0] ** 2 + h1[1] ** 2 - h2[0] ** 2 - h2[1] ** 2) / d2)
-        f2 = [e for e in estimates if e > 0]
+        # Two constraints on f^2, each linear: D * f^2 + N = 0, from r1 . r2 = 0 and
+        # |r1| = |r2|. Seen square-on from behind a baseline the first one's D
+        # vanishes and its estimate is noise, so solve both in least squares,
+        # which weighs each by how well it is conditioned.
+        d = np.array([h1[2] * h2[2], h1[2] ** 2 - h2[2] ** 2])
+        n = np.array([h1[0] * h2[0] + h1[1] * h2[1], h1[0] ** 2 + h1[1] ** 2 - h2[0] ** 2 - h2[1] ** 2])
+        f2 = -float(d @ n) / float(d @ d) if d @ d > 1e-24 else -1.0
         # Fall back to a typical phone field of view when the geometry is degenerate.
-        self.f = float(np.sqrt(np.mean(f2))) if f2 else width / (2 * np.tan(np.deg2rad(35)))
+        self.f = float(np.sqrt(f2)) if f2 > 0 else width / (2 * np.tan(np.deg2rad(35)))
         k_inv = np.diag([1 / self.f, 1 / self.f, 1.0])
         r1, r2, tr = k_inv @ h1, k_inv @ h2, k_inv @ h3
         lam = 1 / np.linalg.norm(r1)

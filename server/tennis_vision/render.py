@@ -15,6 +15,7 @@ import cv2
 import numpy as np
 
 from .court import COURT_LINES, CourtHomography
+from .stabilize import apply
 
 TRAIL_FRAMES = 12
 CALL_SECONDS = 1.2
@@ -86,7 +87,8 @@ def render_overlay(video_path: str, report: dict, out_path: str) -> str:
     s = max(w, h) / 1280  # scale drawing to the video size
 
     court = CourtHomography(np.array(report["court"]["corners_px"]))
-    court_lines = [court.to_image(np.array([a, b])).round().astype(int) for a, b in COURT_LINES]
+    court_pts = [court.to_image(np.array([a, b])) for a, b in COURT_LINES]
+    transforms = report.get("frame_transforms")
     track = {int(f): (x, y) for f, x, y in report["ball_track"]}
     names = {p: _label(n, p) for p, n in report["players"].items()}
     points = report["points"]
@@ -97,6 +99,11 @@ def render_overlay(video_path: str, report: dict, out_path: str) -> str:
     while ok:
         t = i / fps
         overlay = frame.copy()
+        if transforms and i < len(transforms):
+            m = np.array(transforms[i]).reshape(3, 3)
+            court_lines = [apply(m, p).round().astype(int) for p in court_pts]
+        else:
+            court_lines = [p.round().astype(int) for p in court_pts]
         for p in court_lines:
             cv2.line(overlay, tuple(p[0]), tuple(p[1]), YELLOW, max(1, int(s)), cv2.LINE_AA)
         frame = cv2.addWeighted(overlay, 0.35, frame, 0.65, 0)

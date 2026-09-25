@@ -129,7 +129,9 @@ def render(truth: Truth, cam: Camera, seed: int = 0, players: bool = True):
     cv2.fillPoly(base, [court_poly.astype(np.int32)], (140, 90, 50))
     for a, b in COURT_LINES:
         pa, pb = cam.project([a, b])
-        cv2.line(base, tuple(pa.round().astype(int)), tuple(pb.round().astype(int)), (245, 245, 245), 3, cv2.LINE_AA)
+        # Subpixel endpoints (4 fractional bits) so the painted lines sit exactly on the model.
+        pa, pb = (tuple((p * 16).round().astype(int)) for p in (pa, pb))
+        cv2.line(base, pa, pb, (245, 245, 245), 3, cv2.LINE_AA, shift=4)
     net_l, net_r = cam.project([(-HALF_DW - 0.9, 0, 1.0), (HALF_DW + 0.9, 0, 1.0)])
     base_l, base_r = cam.project([(-HALF_DW - 0.9, 0, 0), (HALF_DW + 0.9, 0, 0)])
     net = np.array([net_l, net_r, base_r, base_l]).astype(np.int32)
