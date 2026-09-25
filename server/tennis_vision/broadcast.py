@@ -217,16 +217,19 @@ class _Stabilizer:
 
 
 def track_shot(
-    cap: cv2.VideoCapture, shot: CourtShot, size: tuple[int, int]
+    cap: cv2.VideoCapture, shot: CourtShot, size: tuple[int, int], detector=None
 ) -> tuple[np.ndarray, CourtHomography, float]:
     """Ball track through one court shot, stabilized to the shot's first frame.
 
-    Returns (track, court homography of the first frame, fraction of frames
-    that could be mapped onto the first frame).
+    `detector` defaults to `MovingCameraDetector`; a `tracknet.TrackNetDetector`
+    is far more reliable. Returns (track, court homography of the first frame,
+    fraction of frames that could be mapped onto the first frame).
     """
     cap.set(cv2.CAP_PROP_POS_FRAMES, shot.start)
     ref = CourtHomography(shot.corners)
-    detector = MovingCameraDetector((size[1], size[0]))
+    if detector is None:
+        detector = MovingCameraDetector((size[1], size[0]))
+    detector.reset()
     tracker = BallTracker(gate_px=60 * size[0] / 1280)
     n = shot.end - shot.start
     stabilizer = None
@@ -252,7 +255,10 @@ def track_shot(
         motion = None if prev_to_ref is None else np.linalg.inv(to_ref) @ prev_to_ref
         prev_to_ref = to_ref
         hom = CourtHomography(CourtHomography._apply(np.linalg.inv(to_ref), ref.image_corners))
-        cands = detector.detect(frame, _play_region(hom, frame.shape[:2]), _line_pixels(hom, frame.shape[:2]), motion)
+        region = _play_region(hom, frame.shape[:2])
+        cands = detector.detect(frame, region, _line_pixels(hom, frame.shape[:2]), motion)
+        h, w = region.shape
+        cands = [c for c in cands if 0 <= c.x < w and 0 <= c.y < h and region[int(c.y), int(c.x)]]
         if cands:
             pts = CourtHomography._apply(to_ref, np.array([[c.x, c.y] for c in cands]))
             for c, (x, y) in zip(cands, pts):
@@ -273,7 +279,10 @@ def _shift(rally: Rally, offset: int) -> Rally:
 
 
 def analyze_broadcast(
-    path: str, options: Options | None = None, progress: Callable[[float], None] | None = None
+    path: str,
+    options: Options | None = None,
+    progress: Callable[[float], None] | None = None,
+    tracknet_weights: str | None = None,
 ) -> dict:
     """Finds the court shots in a broadcast, then tracks, judges and scores their rallies."""
     options = options or Options()
@@ -282,6 +291,11 @@ def analyze_broadcast(
         return (lambda p: progress(lo + (hi - lo) * p)) if progress else None
 
     shots, fps, n_frames = find_court_shots(path, progress=stage(0.0, 0.3))
+    detector = None
+    if tracknet_weights:
+        from .tracknet import TrackNetDetector
+
+        detector = TrackNetDetector(tracknet_weights)
     cap = cv2.VideoCapture(path)
     scale, size = _analysis_size(cap)
     src_w, src_h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -289,7 +303,7 @@ def analyze_broadcast(
     rallies: list[Rally] = []
     shot_out = []
     for k, shot in enumerate(shots):
-        track, ref, followed = track_shot(cap, shot, size)
+        track, ref, followed = track_shot(cap, shot, size, detector)
         found = [_shift(r, shot.start) for r in find_rallies(track, ref, fps, size, method="2d")]
         rallies.extend(found)
         shot_out.append(
@@ -349,8 +363,9 @@ def main() -> None:
     ap.add_argument("--doubles", action="store_true")
     ap.add_argument("--out", default="-", help="report JSON path")
     ap.add_argument("--reel", help="also write the court shots, joined, to this .mp4")
+    ap.add_argument("--tracknet", metavar="WEIGHTS", help="find the ball with TrackNet (needs torch)")
     args = ap.parse_args()
-    report = analyze_broadcast(args.video, Options(doubles=args.doubles))
+    report = analyze_broadcast(args.video, Options(doubles=args.doubles), tracknet_weights=args.tracknet)
     if args.reel:
         write_reel(args.video, [(s["start_t"], s["end_t"]) for s in report["court_shots"]], args.reel, pad_s=0.0)
     text = json.dumps(report, ensure_ascii=False, indent=2)
