@@ -29,6 +29,7 @@ python3 -m pip install -e '.[dev]'
 uvicorn tennis_vision.api:app --host 0.0.0.0 --port 8000
 python3 -m pytest            # 합성 경기 영상으로 전체 파이프라인 검증
 tennis-analyze match.mp4 --out report.json --overlay match_analyzed.mp4   # 앱 없이 분석, 판정을 그린 영상도 저장
+tennis-segments full_match.mp4 --out-dir clips   # 긴 영상에서 메인 카메라 랠리 구간만 잘라내기
 ```
 
 ### 앱
@@ -54,7 +55,13 @@ npx expo start
 - 바운스 위치 오차: 가까운 코트 약 5~10cm, 먼 코트 약 10~25cm
 - 테스트 경기의 서브 인, 폴트, 아웃, 투바운드, 에이스 판정과 최종 점수가 모두 정답과 일치
 
-실제 경기 영상에서는 아직 검증하지 못했습니다. 예상되는 약점과 다음 단계는 [docs/ROADMAP.md](docs/ROADMAP.md)에 정리했습니다. 특히 공 검출기를 학습형 모델(TrackNet 계열)로 바꾸는 것이 가장 큰 개선이 될 것입니다. `ball.py`의 `BallDetector`가 교체 지점입니다.
+실제 중계 영상(호주오픈 2026 결승 하이라이트, 720p 25fps)으로도 시험했습니다.
+
+- 메인 카메라 구간 자동 추출, 코트 인식, 중계 카메라의 팬·줌 보정은 잘 동작
+- 공 궤적은 랠리의 상당 부분을 따라가지만, 선수 근처와 네트 위에서 자주 끊김
+- 바운스 인/아웃은 아직 믿기 어려움: 25fps에선 공이 한 프레임에 약 1m 움직여 바운스 위치가 50cm~1m 흔들림
+
+폰으로 직접 찍을 때는 60fps 이상을 권장합니다. 예상되는 약점과 다음 단계는 [docs/ROADMAP.md](docs/ROADMAP.md)에 정리했습니다. 특히 공 검출기를 학습형 모델(TrackNet 계열)로 바꾸는 것이 가장 큰 개선이 될 것입니다. `ball.py`의 `BallDetector`가 교체 지점입니다.
 
 ## 다른 분석 아이디어
 
