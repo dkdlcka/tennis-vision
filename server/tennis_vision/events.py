@@ -404,10 +404,35 @@ def _classify(cuts, contacts, arcs: list[Arc], homography: CourtHomography, came
     return events
 
 
+def remove_spikes(track: np.ndarray, tol_px: float, span: int = 4) -> np.ndarray:
+    """Drops points that neither side of the track agrees with.
+
+    Each point is predicted by a parabola through the points just before it and
+    one through the points just after it. The tracker jumping onto a nearby
+    blob for a frame or two misses both; a real contact (a bounce or a hit)
+    still continues at least one side.
+    """
+    out = track.copy()
+    seen = ~np.isnan(track[:, 0])
+    for f in np.where(seen)[0]:
+        errors = []
+        for side in (np.arange(f - span, f), np.arange(f + 1, f + span + 1)):
+            side = side[(side >= 0) & (side < len(track))]
+            side = side[seen[side]]
+            if len(side) < 3:
+                break
+            fit = [np.polyval(np.polyfit(side - f, track[side, k], 2), 0.0) for k in (0, 1)]
+            errors.append(np.hypot(fit[0] - track[f, 0], fit[1] - track[f, 1]))
+        if len(errors) == 2 and min(errors) > tol_px:
+            out[f] = np.nan
+    return out
+
+
 def find_rallies(
     track: np.ndarray, homography: CourtHomography, fps: float, image_size: tuple[int, int]
 ) -> list[Rally]:
     camera = CourtCamera(homography, image_size)
+    track = remove_spikes(track, tol_px=max(6.0, 8.0 * image_size[0] / 1280))
     rallies = []
     for a, b in split_rallies(track, fps):
         events, arcs = detect_events(track, a, b, homography, camera, fps)

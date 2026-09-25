@@ -56,39 +56,136 @@ class MotionColorDetector:
         if self.court_mask is not None:
             motion &= self.court_mask
 
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        ball_color = cv2.inRange(hsv, (22, 60, 90), (50, 255, 255))
-
         background = self.bg.getBackgroundImage()
         bg_gray = cv2.cvtColor(background, cv2.COLOR_BGR2GRAY) if background is not None else None
+        return _blobs(frame, gray, bg_gray, raw, motion, d1, self.min_area, self.max_area)
 
-        n, labels, stats, centroids = cv2.connectedComponentsWithStats(motion, connectivity=8)
-        out = []
-        for i in range(1, n):
-            area = stats[i, cv2.CC_STAT_AREA]
-            if not (self.min_area <= area <= self.max_area):
-                continue
-            w, h = stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]
-            # Motion blur stretches the ball, but not into a long line.
-            elongation = max(w, h) / max(1, min(w, h))
-            if elongation > 6:
-                continue
-            ys, xs = slice(stats[i, 1], stats[i, 1] + h), slice(stats[i, 0], stats[i, 0] + w)
-            region = labels[ys, xs] == i
-            # A ball is brighter than the court behind it; shadows are darker.
-            if bg_gray is not None and gray[ys, xs][region].mean() < bg_gray[ys, xs][region].mean():
-                continue
-            color = ball_color[ys, xs][region]
-            color_frac = float((color > 0).mean()) if color.size else 0.0
-            score = 0.3 + 0.7 * color_frac - 0.05 * (elongation - 1)
-            # Center from the unfiltered pixels: the morphology above shifts blobs slightly.
-            yy, xx = np.nonzero(region & (raw[ys, xs] > 0) & (d1[ys, xs] > 18))
-            if len(xx):
-                cx, cy = stats[i, 0] + xx.mean(), stats[i, 1] + yy.mean()
-            else:
-                cx, cy = centroids[i]
-            out.append(Candidate(float(cx), float(cy), score))
+
+class MovingCameraDetector:
+    """`MotionColorDetector` for a camera that pans and zooms, like a broadcast.
+
+    A camera that only turns and zooms maps whole frames onto each other with a
+    homography, measured from background features tracked between frames. The
+    recent frames are warped onto the current one: the frame from a few frames
+    back stands in for the background, the last two show what just moved.
+    """
+
+    def __init__(self, frame_size: tuple[int, int], depth: int = 6):
+        height, width = frame_size
+        scale = width / 1280
+        self.min_area = max(2.0, 3 * scale * scale)
+        self.max_area = 400 * scale * scale
+        self.small = width < 1000
+        self.depth = depth
+        self.history: list[tuple[np.ndarray, np.ndarray]] = []  # (gray, maps it onto the latest frame)
+
+    def reset(self) -> None:
+        self.history = []
+
+    def detect(
+        self,
+        frame: np.ndarray,
+        region: np.ndarray | None = None,
+        ignore: np.ndarray | None = None,
+        motion: np.ndarray | None = None,
+    ) -> list[Candidate]:
+        """Candidates in this frame. `region` limits where to look; `ignore` masks out
+        pixels (such as painted lines) that misalignment would light up. `motion`
+        maps the previous frame onto this one when the caller has measured it."""
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if self.history and motion is None:
+            motion = frame_motion(self.history[-1][0], gray)
+            if motion is None:  # a cut, or too little texture to follow the camera
+                self.reset()
+        self.history = [(g, motion @ m) for g, m in self.history]
+        out: list[Candidate] = []
+        if len(self.history) == self.depth:
+            out = self._detect(frame, gray, region, ignore)
+        self.history = (self.history + [(gray, np.eye(3))])[-self.depth :]
         return out
+
+    def _detect(self, frame, gray, region, ignore) -> list[Candidate]:
+        size = (gray.shape[1], gray.shape[0])
+        valid = np.full(gray.shape, 255, np.uint8)
+        warped = []
+        for g, m in (self.history[0], self.history[-2], self.history[-1]):
+            warped.append(cv2.warpPerspective(g, m, size, flags=cv2.INTER_LINEAR, borderValue=0))
+            valid &= cv2.warpPerspective(np.full_like(g, 255), m, size, flags=cv2.INTER_NEAREST, borderValue=0)
+        valid = cv2.erode(valid, np.ones((5, 5), np.uint8))
+        if region is not None:
+            valid &= region
+        if ignore is not None:
+            valid &= ~ignore
+        background, before_last, last = warped
+        d_bg = cv2.absdiff(gray, background)
+        d1 = cv2.absdiff(gray, last)
+        d2 = cv2.absdiff(last, before_last)
+        # Differs from the background now and changed recently; the ghost the
+        # ball leaves in the background frame fails the brightness test later.
+        raw = ((d_bg > 18) & ((d1 > 18) | (d2 > 18)) & (valid > 0)).astype(np.uint8) * 255
+        # In small frames a distant ball is only a pixel or two wide, which an
+        # opening would erase; the painted lines are masked out instead.
+        motion = raw if self.small else cv2.morphologyEx(raw, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+        motion = cv2.dilate(motion, np.ones((3, 3), np.uint8))
+        return _blobs(frame, gray, background, raw, motion, d1, self.min_area, self.max_area)
+
+
+def frame_motion(prev: np.ndarray, cur: np.ndarray) -> np.ndarray | None:
+    """Homography mapping `prev` onto `cur`, from tracked background features; None on a cut."""
+    pts = cv2.goodFeaturesToTrack(prev, maxCorners=400, qualityLevel=0.01, minDistance=8)
+    if pts is None or len(pts) < 20:
+        return None
+    nxt, status, _ = cv2.calcOpticalFlowPyrLK(prev, cur, pts, None, winSize=(21, 21), maxLevel=3)
+    ok = status.ravel() == 1
+    if ok.sum() < 20:
+        return None
+    m, inliers = cv2.findHomography(pts[ok], nxt[ok], cv2.RANSAC, 2.0)
+    if m is None or inliers.sum() < 0.5 * ok.sum():
+        return None
+    return m
+
+
+def _blobs(
+    frame: np.ndarray,
+    gray: np.ndarray,
+    bg_gray: np.ndarray | None,
+    raw: np.ndarray,
+    motion: np.ndarray,
+    d1: np.ndarray,
+    min_area: float,
+    max_area: float,
+) -> list[Candidate]:
+    """Scores moving blobs by size, shape, brightness and ball color."""
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    ball_color = cv2.inRange(hsv, (22, 60, 90), (50, 255, 255))
+
+    n, labels, stats, centroids = cv2.connectedComponentsWithStats(motion, connectivity=8)
+    out = []
+    for i in range(1, n):
+        area = stats[i, cv2.CC_STAT_AREA]
+        if not (min_area <= area <= max_area):
+            continue
+        w, h = stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]
+        # Motion blur stretches the ball, but not into a long line.
+        elongation = max(w, h) / max(1, min(w, h))
+        if elongation > 6:
+            continue
+        ys, xs = slice(stats[i, 1], stats[i, 1] + h), slice(stats[i, 0], stats[i, 0] + w)
+        region = labels[ys, xs] == i
+        # A ball is brighter than the court behind it; shadows are darker.
+        if bg_gray is not None and gray[ys, xs][region].mean() < bg_gray[ys, xs][region].mean():
+            continue
+        color = ball_color[ys, xs][region]
+        color_frac = float((color > 0).mean()) if color.size else 0.0
+        score = 0.3 + 0.7 * color_frac - 0.05 * (elongation - 1)
+        # Center from the unfiltered pixels: the morphology above shifts blobs slightly.
+        yy, xx = np.nonzero(region & (raw[ys, xs] > 0) & (d1[ys, xs] > 18))
+        if len(xx):
+            cx, cy = stats[i, 0] + xx.mean(), stats[i, 1] + yy.mean()
+        else:
+            cx, cy = centroids[i]
+        out.append(Candidate(float(cx), float(cy), score))
+    return out
 
 
 @dataclass

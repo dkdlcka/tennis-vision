@@ -159,6 +159,30 @@ def render(truth: Truth, cam: Camera, seed: int = 0, players: bool = True):
         yield np.clip(frame + noise, 0, 255).astype(np.uint8)
 
 
+def render_moving(truth: Truth, cam_at, seed: int = 0):
+    """Like `render`, but the camera may change every frame (`cam_at(frame) -> Camera`),
+    as a broadcast camera pans and zooms. Boards around the court give the
+    background texture that a real venue has."""
+    rng = np.random.default_rng(seed)
+    boards = []
+    for _ in range(60):
+        side = rng.choice([-1, 1])
+        if rng.random() < 0.5:  # along the sidelines
+            x, y = side * rng.uniform(HALF_DW + 3.5, HALF_DW + 8), rng.uniform(-HALF_L - 4, HALF_L + 4)
+        else:  # behind the baselines
+            x, y = rng.uniform(-HALF_DW - 6, HALF_DW + 6), side * rng.uniform(HALF_L + 5.5, HALF_L + 9)
+        size = rng.uniform(0.4, 1.2)
+        color = tuple(int(c) for c in rng.integers(0, 255, 3))
+        boards.append((x, y, size, color))
+    for i, pos in enumerate(truth.positions):
+        cam = cam_at(i)
+        frame = next(render(Truth(positions=[pos]), cam, seed=seed + i, players=False))
+        for x, y, size, color in boards:
+            poly = cam.project([(x - size, y - size), (x + size, y - size), (x + size, y + size), (x - size, y + size)])
+            cv2.fillPoly(frame, [poly.round().astype(np.int32)], color)
+        yield frame
+
+
 def write_video(path: str, truth: Truth, cam: Camera, fps: float) -> None:
     out = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (cam.width, cam.height))
     for frame in render(truth, cam):

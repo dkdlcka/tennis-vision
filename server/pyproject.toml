@@ -16,6 +16,7 @@ dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.5"]
 
 [project.scripts]
 tennis-analyze = "tennis_vision.pipeline:main"
+tennis-broadcast = "tennis_vision.broadcast:main"
 
 [tool.setuptools]
 packages = ["tennis_vision"]
