@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .court import HALF_DW, HALF_L, CourtCamera, CourtHomography
+from .court import HALF_DW, HALF_L, HALF_SW, SERVICE_LINE, CourtCamera, CourtHomography
 
 G = 9.81
 
@@ -447,7 +447,7 @@ def find_rallies(
     rallies = []
     for a, b in split_rallies(track, fps):
         if method == "2d":
-            rallies.append(Rally(a, b, detect_events_2d(track, a, b, homography, 1.5 * image_size[0] / 1280)))
+            rallies.append(Rally(a, b, detect_events_2d(track, a, b, homography, 1.5 * image_size[0] / 1280, fps)))
         else:
             events, arcs = detect_events(track, a, b, homography, camera, fps)
             rallies.append(Rally(a, b, events, arcs))
@@ -509,7 +509,7 @@ class _Kink:
 
 
 def detect_events_2d(
-    track: np.ndarray, start: int, end: int, homography: CourtHomography, noise_px: float = 1.5
+    track: np.ndarray, start: int, end: int, homography: CourtHomography, noise_px: float = 1.5, fps: float = 30.0
 ) -> list[Event]:
     """Bounces and hits from the image track alone, for a camera behind the near baseline.
 
@@ -567,14 +567,20 @@ def detect_events_2d(
             xy = (float(kink.ground[0]), HALF_L if far else -HALF_L)
         events.append(Event(kind, kink.frame, (float(kink.img[0]), float(kink.img[1])), xy))
 
-    # A serve seen from the toss: the ball goes straight up and falls back (or,
-    # seen late, is nearly still), then leaves fast; it travels away (up the
-    # screen) from a near server.
-    first = kinks[0]
-    tossed = first.toss_before or np.hypot(*first.v_in) < 0.2 * np.hypot(*first.v_out)
-    if tossed:
-        add("hit", first, far=first.drift_out > 0)
-        kinks = kinks[1:]
+    # A serve: the ball goes straight up and falls back, then leaves fast. The
+    # server bouncing the ball beforehand also goes up and down, but the ball
+    # comes back slowly into the hand, so it fails the speed test. Everything
+    # before the serve is dead ball. A serve from the near end travels away,
+    # up the screen.
+    fast = 8.0 * noise_px / 1.5
+    serve = next((i for i, k in enumerate(kinks) if k.toss_before and np.hypot(*k.v_out) > fast), None)
+    if serve is None and np.hypot(*kinks[0].v_in) < 0.2 * np.hypot(*kinks[0].v_out):
+        serve = 0  # the toss was only seen at its top
+    toss_hit = None
+    if serve is not None:
+        add("hit", kinks[serve], far=kinks[serve].drift_out > 0)
+        toss_hit = events[-1]
+        kinks = kinks[serve + 1 :]
     near_group: list[_Kink] = []
 
     def flush(next_is_far_bounce: bool, last: bool) -> None:
@@ -601,7 +607,66 @@ def detect_events_2d(
         elif rising_to_falling or k.ground[1] >= HALF_L + 4:
             add("hit", k, far=True)
     flush(next_is_far_bounce=False, last=True)
-    return _drop_impossible(events)
+    events = _drop_impossible(events)
+    # The point starts at the serve: the first shot out of a dead ball (or off a
+    # toss) whose ball lands around the service boxes on the other side, in or
+    # just long or wide as a fault. Before it the ball is bounced by the
+    # server, rolled back, caught.
+    start_at = next(
+        (
+            i
+            for i, (hit, bounce) in enumerate(zip(events, events[1:]))
+            if hit.kind == "hit"
+            and bounce.kind == "bounce"
+            and np.sign(bounce.court_xy[1]) == -np.sign(hit.court_xy[1])
+            and abs(bounce.court_xy[1]) <= SERVICE_LINE + 1.5
+            and abs(bounce.court_xy[0]) <= HALF_SW + 1.0
+            and bounce.frame - hit.frame <= 0.9 * fps  # even a slow second serve lands within that
+            # and the ball was dead before it (or the toss was seen), not in a rally
+            and (hit is toss_hit or i == 0 or hit.frame - events[i - 1].frame > 3 * fps)
+        ),
+        None,
+    )
+    served = start_at is not None
+    if served:
+        events = events[start_at:]
+    elif (
+        events
+        and events[0].kind == "bounce"
+        and abs(events[0].court_xy[1]) <= SERVICE_LINE + 1.5
+        and abs(events[0].court_xy[0]) <= HALF_SW + 1.0
+    ):
+        pass  # a serve from the far end whose contact went unseen; the point starts at its bounce
+    for hit, bounce in zip(events, events[1:]):
+        if hit.kind == "hit" and bounce.kind == "bounce":
+            hit.height_m = SERVE_CONTACT_M if served and hit is events[0] else STROKE_CONTACT_M
+            hit.speed_kmh = launch_speed_kmh(hit, bounce, fps, hit.height_m)
+    return events
+
+
+SERVE_CONTACT_M = 2.7
+STROKE_CONTACT_M = 1.0
+DRAG_PER_M = 0.0206  # rho * Cd * A / (2 m) for a tennis ball, 1/m
+
+
+def launch_speed_kmh(hit: Event, bounce: Event, fps: float, contact_height: float) -> float | None:
+    """Speed off the racket from where a shot was hit, where it landed, and how long it flew.
+
+    Drag slows a tennis ball fast (a serve loses a quarter of its speed by the
+    bounce), so the average over the flight understates the speed a broadcast
+    shows. Under quadratic drag v(t) = v0 / (1 + k v0 t), the path length after
+    t is ln(1 + k v0 t) / k, which gives v0 = (exp(k d) - 1) / (k t). The path
+    is taken as straight from the contact point down to the bounce.
+    """
+    t = (bounce.frame - hit.frame) / fps
+    if t <= 0:
+        return None
+    d = float(
+        np.hypot(np.hypot(bounce.court_xy[0] - hit.court_xy[0], bounce.court_xy[1] - hit.court_xy[1]), contact_height)
+    )
+    v0 = (np.exp(DRAG_PER_M * d) - 1.0) / (DRAG_PER_M * t)
+    kmh = v0 * 3.6
+    return round(float(kmh), 1) if 20 < kmh < 260 else None
 
 
 def _drop_impossible(events: list[Event]) -> list[Event]:

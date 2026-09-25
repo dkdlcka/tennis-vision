@@ -72,3 +72,20 @@ def test_serve_speed_is_recovered():
     step = truth.positions[first + 1] - truth.positions[first]
     true_speed = np.linalg.norm(step[:2]) * FPS * 3.6  # horizontal speed is constant in flight
     assert abs(np.linalg.norm(rally.arcs[0].v0[:2]) * 3.6 - true_speed) < 3
+
+
+def test_launch_speed_undoes_drag():
+    from tennis_vision.events import DRAG_PER_M, Event, launch_speed_kmh
+
+    # A 180 km/h serve from 2.7 m, flown with quadratic drag (and no gravity:
+    # the estimate takes the path as straight), for 0.5 s.
+    v0, dt, t, d = 50.0, 1e-4, 0.0, 0.0
+    v = v0
+    while t < 0.5:
+        d += v * dt
+        v -= DRAG_PER_M * v * v * dt
+        t += dt
+    ground = (d * d - 2.7 * 2.7) ** 0.5
+    hit = Event("hit", 0.0, (0, 0), (0.0, -11.885))
+    bounce = Event("bounce", 15.0, (0, 0), (0.0, -11.885 + ground))
+    assert abs(launch_speed_kmh(hit, bounce, 30.0, 2.7) - v0 * 3.6) < 2.0

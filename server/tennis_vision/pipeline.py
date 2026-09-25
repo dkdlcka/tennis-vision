@@ -172,7 +172,11 @@ def build_report(rallies, track, homography, fps, n_frames, options: Options) ->
                         s["deep_shots"] += 1
                 s["landing"].append([round(call.x, 2), round(call.y, 2)])
 
-        serve_speed = round(float(np.linalg.norm(rally.arcs[0].v0)) * 3.6, 1) if rally.arcs else None
+        if rally.arcs:
+            serve_speed = round(float(np.linalg.norm(rally.arcs[0].v0)) * 3.6, 1)
+        else:  # contacts read from the image track: the serve's own estimate, if any
+            first = rally.events[0] if rally.events else None
+            serve_speed = first.speed_kmh if first and first.kind == "hit" else None
         if serve_speed is not None:
             stats[server]["serve_speeds"].append(serve_speed)
         hits = []
