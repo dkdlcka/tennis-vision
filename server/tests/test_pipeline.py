@@ -3,14 +3,22 @@
 import pytest
 
 from synth import Camera, simulate, standard_match, write_video
+import cv2
+
 from tennis_vision.pipeline import analyze_video
+from tennis_vision.render import render_overlay
 
 
 @pytest.fixture(scope="module")
-def report(tmp_path_factory):
+def video(tmp_path_factory):
     path = str(tmp_path_factory.mktemp("video") / "match.mp4")
     write_video(path, simulate(standard_match(), 30), Camera(), 30)
-    return analyze_video(path)
+    return path
+
+
+@pytest.fixture(scope="module")
+def report(video):
+    return analyze_video(video)
 
 
 def test_court_found_automatically(report):
@@ -53,3 +61,10 @@ def test_shot_details(report):
     assert b[-1]["zone"] == "wide"
     assert report["stats"]["players"]["B"]["errors_long"] == 1
     assert report["stats"]["players"]["A"]["serve_zones"] == {"wide": 1, "body": 2, "T": 0}
+
+
+def test_overlay_video(video, report, tmp_path):
+    out = render_overlay(video, report, str(tmp_path / "overlay.mp4"))
+    cap = cv2.VideoCapture(out)
+    assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == report["video"]["frames"]
+    assert int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) == report["video"]["width"]

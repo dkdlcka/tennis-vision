@@ -28,7 +28,7 @@ cd server
 python3 -m pip install -e '.[dev]'
 uvicorn tennis_vision.api:app --host 0.0.0.0 --port 8000
 python3 -m pytest            # 합성 경기 영상으로 전체 파이프라인 검증
-tennis-analyze match.mp4 --out report.json   # 앱 없이 바로 분석
+tennis-analyze match.mp4 --out report.json --overlay match_analyzed.mp4   # 앱 없이 분석, 판정을 그린 영상도 저장
 ```
 
 ### 앱
