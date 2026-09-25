@@ -158,6 +158,8 @@ def _blobs(
     """Scores moving blobs by size, shape, brightness and ball color."""
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     ball_color = cv2.inRange(hsv, (22, 60, 90), (50, 255, 255))
+    # Broadcast cameras often blow the ball out to a pale, near-white yellow-green.
+    ball_color |= cv2.inRange(hsv, (30, 15, 245), (70, 110, 255))
 
     n, labels, stats, centroids = cv2.connectedComponentsWithStats(motion, connectivity=8)
     out = []
