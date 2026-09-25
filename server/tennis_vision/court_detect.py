@@ -128,6 +128,12 @@ def detect_court(frame: np.ndarray, max_lines: int = 7) -> tuple[CourtHomography
                 continue
             if np.abs(quad).max() > 4 * max(width, height):
                 continue
+            # A collapsed quad projects every court line onto one detected line and
+            # scores perfectly, so require a court of plausible size.
+            x, y = quad[:, 0], quad[:, 1]
+            area = 0.5 * abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
+            if area < 0.03 * width * height or quad[0, 1] - quad[3, 1] < 0.1 * height:
+                continue
             for half_w in (HALF_DW, HALF_SW):
                 # Corners of the chosen sidelines, expanded to doubles corners.
                 court_quad = np.array([(-half_w, -HALF_L), (half_w, -HALF_L), (half_w, HALF_L), (-half_w, HALF_L)])
