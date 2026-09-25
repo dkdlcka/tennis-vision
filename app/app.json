@@ -1,0 +1,42 @@
+{
+  "expo": {
+    "name": "Tennis Vision",
+    "slug": "tennis-vision",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "\ubd84\uc11d\ud560 \ud14c\ub2c8\uc2a4 \uc601\uc0c1\uc744 \uace0\ub974\uae30 \uc704\ud574 \uc0ac\uc9c4 \ubcf4\uad00\ud568\uc5d0 \uc811\uadfc\ud569\ub2c8\ub2e4.",
+        "NSCameraUsageDescription": "\ud14c\ub2c8\uc2a4 \uacbd\uae30\ub97c \ucd2c\uc601\ud558\uae30 \uc704\ud574 \uce74\uba54\ub77c\ub97c \uc0ac\uc6a9\ud569\ub2c8\ub2e4.",
+        "NSMicrophoneUsageDescription": "\uc601\uc0c1 \ucd2c\uc601 \uc2dc \uc18c\ub9ac\ub97c \ud568\uaed8 \ub179\uc74c\ud569\ub2c8\ub2e4."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-video",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "\ubd84\uc11d\ud560 \ud14c\ub2c8\uc2a4 \uc601\uc0c1\uc744 \uace0\ub974\uae30 \uc704\ud574 \uc0ac\uc9c4 \ubcf4\uad00\ud568\uc5d0 \uc811\uadfc\ud569\ub2c8\ub2e4.",
+          "cameraPermission": "\ud14c\ub2c8\uc2a4 \uacbd\uae30\ub97c \ucd2c\uc601\ud558\uae30 \uc704\ud574 \uce74\uba54\ub77c\ub97c \uc0ac\uc6a9\ud569\ub2c8\ub2e4."
+        }
+      ]
+    ],
+    "scheme": "tennisvision"
+  }
+}
