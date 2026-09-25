@@ -310,6 +310,7 @@ def main() -> None:
     ap.add_argument("--corners", help="NLx,NLy,NRx,NRy,FRx,FRy,FLx,FLy doubles corners in pixels")
     ap.add_argument("--doubles", action="store_true")
     ap.add_argument("--out", default="-")
+    ap.add_argument("--overlay", help="also write the video with calls and score drawn on it")
     args = ap.parse_args()
     corners = None
     if args.corners:
@@ -321,6 +322,10 @@ def main() -> None:
         print(text)
     else:
         Path(args.out).write_text(text)
+    if args.overlay:
+        from .render import render_overlay
+
+        render_overlay(args.video, report, args.overlay)
 
 
 if __name__ == "__main__":
