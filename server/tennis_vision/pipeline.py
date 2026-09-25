@@ -9,9 +9,9 @@ from typing import Callable
 import cv2
 import numpy as np
 
-from .ball import BallTracker, MotionColorDetector
-from .court import SERVICE_LINE, CourtHomography, side_of
-from .court_detect import detect_court
+from .ball import BallTracker, StreakDetector
+from .court import HALF_DW, HALF_L, SERVICE_LINE, CourtCamera, CourtHomography, Side, side_of
+from .court_detect import detect_court, line_mask
 from .events import find_rallies
 from .scoring import Match, judge_point
 from .shots import miss_type, serve_zone, shot_direction
@@ -32,6 +32,7 @@ class Options:
     a_starts_near: bool = True
     player_names: list[str] = field(default_factory=lambda: ["A", "B"])
     stabilize: bool = True  # align frames to the first one when the camera pans, zooms or shakes
+    infer_ends: bool = True  # swap ends when the first serve lands on the server's own half
 
 
 def _read_frames(path: str):
@@ -64,8 +65,10 @@ def analyze_video(path: str, options: Options | None = None, progress: Callable[
     detections: list[tuple[CourtHomography, float]] = []
     court_every = max(1, int(fps), total // COURT_SAMPLES)
 
-    detector = MotionColorDetector((size[1], size[0]))
-    tracker = BallTracker(gate_px=60 * size[0] / 1280)
+    # Painted lines and logos flicker slightly after alignment; never look for the ball on them.
+    static = cv2.dilate(line_mask(first_small), np.ones((5, 5), np.uint8))
+    detector = StreakDetector((size[1], size[0]), static)
+    candidates = []
     frame_idx = 0
     frame = first_small
     while True:
@@ -83,7 +86,7 @@ def analyze_video(path: str, options: Options | None = None, progress: Callable[
             found = detect_court(frame)
             if found is not None:
                 detections.append(found)
-        tracker.update(frame_idx, detector.detect(frame))
+        candidates.append(detector.detect(frame))
         frame_idx += 1
         if progress and total and frame_idx % 30 == 0:
             progress(min(0.95, frame_idx / total))
@@ -93,7 +96,7 @@ def analyze_video(path: str, options: Options | None = None, progress: Callable[
         frame = prep(raw)
     cap.release()
     n_frames = frame_idx
-    track = tracker.result(n_frames)
+    candidates = candidates[1:] + [[]]  # the detector answers one frame late
 
     court_source = "manual"
     court_score = None
@@ -104,6 +107,15 @@ def analyze_video(path: str, options: Options | None = None, progress: Callable[
             raise CourtNotFound("could not find the court automatically; pass corners")
         homography, court_score = _consensus_court(detections)
         court_source = "auto"
+
+    # Track only inside the space the ball can fly through, so the crowd and
+    # people walking behind the court do not start tracks.
+    region = play_region(CourtCamera(homography, size), size)
+    candidates = drop_clutter(candidates, size, fps)
+    tracker = BallTracker(gate_px=60 * size[0] / 1280, min_travel_px=30 * size[0] / 1280)
+    for i, cands in enumerate(candidates):
+        tracker.update(i, [c for c in cands if _inside(region, c.x, c.y)])
+    track = tracker.result(n_frames)
 
     rallies = find_rallies(track, homography, fps, size)
     report = build_report(rallies, track, homography, fps, n_frames, options)
@@ -136,6 +148,63 @@ class CourtNotFound(ValueError):
     pass
 
 
+def play_region(camera: CourtCamera, size: tuple[int, int]) -> np.ndarray:
+    """Image mask of a box around the court: the run-off where players chase the ball, up to 6 m high."""
+    xs, ys, zs = (-HALF_DW - 3, HALF_DW + 3), (-HALF_L - 5, HALF_L + 5), (0.0, 6.0)
+    box = np.array([(x, y, z) for x in xs for y in ys for z in zs])
+    # Points behind the camera do not project; clip the box to what is in front.
+    depth = (box - camera.center) @ camera.R[2]
+    pts = camera.project(box[depth > 0.5]) if (depth > 0.5).any() else np.empty((0, 2))
+    mask = np.zeros((size[1], size[0]), np.uint8)
+    if len(pts) >= 3:
+        hull = cv2.convexHull(np.clip(pts, -10 * size[0], 10 * size[0]).astype(np.float32)).astype(np.int32)
+        cv2.fillConvexPoly(mask, hull, 1)
+    else:
+        mask[:] = 1
+    return mask
+
+
+def drop_clutter(candidates: list[list], size: tuple[int, int], fps: float, window_s: float = 10.0) -> list[list]:
+    """Remove candidates in places that fire in many frames: the crowd, video boards, text.
+
+    The ball passes any spot in a frame or two, so a spot that keeps producing
+    candidates over several seconds is not the ball. Counted per coarse cell,
+    over a sliding window so long recordings with changing clutter work too.
+    """
+    cell = max(8, int(round(16 * size[0] / 1280)))
+    gw, gh = size[0] // cell + 1, size[1] // cell + 1
+    n = len(candidates)
+    half = max(1, int(window_s * fps / 2))
+    step = half
+    out: list[list] = [[] for _ in range(n)]
+
+    def cells(cands) -> set[tuple[int, int]]:
+        return {(min(gh - 1, max(0, int(c.y // cell))), min(gw - 1, max(0, int(c.x // cell)))) for c in cands}
+
+    per_frame = [cells(c) for c in candidates]
+    for start in range(0, n, step):
+        lo, hi = max(0, start - half), min(n, start + step + half)
+        counts = np.zeros((gh, gw))
+        for k in range(lo, hi):
+            for cy, cx in per_frame[k]:
+                counts[cy, cx] += 1
+        busy = counts > 0.08 * (hi - lo)
+        # Clutter bleeds into neighboring cells.
+        busy = cv2.dilate(busy.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+        for k in range(start, min(n, start + step)):
+            out[k] = [
+                c
+                for c in candidates[k]
+                if not busy[min(gh - 1, max(0, int(c.y // cell))), min(gw - 1, max(0, int(c.x // cell)))]
+            ]
+    return out
+
+
+def _inside(mask: np.ndarray, x: float, y: float) -> bool:
+    xi, yi = int(round(x)), int(round(y))
+    return 0 <= yi < mask.shape[0] and 0 <= xi < mask.shape[1] and bool(mask[yi, xi])
+
+
 def _want_more(detections: list[tuple[CourtHomography, float]]) -> bool:
     return sum(1 for _, score in detections if score >= GOOD_COURT_SCORE) < 12
 
@@ -154,11 +223,17 @@ def _consensus_court(detections: list[tuple[CourtHomography, float]]) -> tuple[C
 
 
 def build_report(rallies, track, homography, fps, n_frames, options: Options) -> dict:
+    a_starts_near = options.a_starts_near
+    first = next((r.bounces[0] for r in rallies if r.bounces), None)
+    if options.infer_ends and first is not None:
+        # A serve always lands across the net, so the first bounce shows which end served.
+        server_near = side_of(first.court_xy[1]) is Side.FAR
+        a_starts_near = server_near if options.first_server == "A" else not server_near
     match = Match(
         best_of=options.best_of,
         no_ad=options.no_ad,
         first_server=options.first_server,
-        a_starts_near=options.a_starts_near,
+        a_starts_near=a_starts_near,
     )
     names = {"A": options.player_names[0], "B": options.player_names[1]}
     points = []
