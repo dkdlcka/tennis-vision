@@ -91,6 +91,97 @@ class MotionColorDetector:
         return out
 
 
+class StreakDetector:
+    """Finds the ball as a small patch brighter than it was a frame before and a frame after.
+
+    Broadcast and compressed 25-30 fps video blurs a fast ball into a faint
+    grayish streak whose color is unreliable, but it is still lighter than the
+    court it crosses. Comparing the middle of three frames with both neighbors
+    (signed, so dark shadows and ghosts drop out) isolates it. Moving players are
+    masked out. Painted lines that flicker with small alignment errors fire in
+    the same places over and over, which the pipeline filters afterwards.
+
+    `detect(frame)` returns the candidates of the previous frame, since it
+    needs the next frame to decide.
+    """
+
+    def __init__(self, frame_size: tuple[int, int], threshold: int = 12):
+        height, width = frame_size
+        s = width / 1280
+        self.min_area = max(2.0, 2 * s * s)
+        self.max_area = 150 * s * s
+        self.player_area = 400 * s * s
+        self.player_margin = max(3, int(12 * s)) | 1
+        self.threshold = threshold
+        self.bg = cv2.createBackgroundSubtractorMOG2(history=150, varThreshold=24, detectShadows=False)
+        self.prev: list[np.ndarray] = []
+        self.backgrounds: list[np.ndarray | None] = []
+
+    def detect(self, frame: np.ndarray) -> list[Candidate]:
+        self.bg.apply(frame)
+        background = self.bg.getBackgroundImage()
+        self.prev.append(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.int16))
+        self.backgrounds.append(
+            cv2.cvtColor(background, cv2.COLOR_BGR2GRAY).astype(np.int16) if background is not None else None
+        )
+        if len(self.prev) > 3:
+            self.prev.pop(0)
+            self.backgrounds.pop(0)
+        if len(self.prev) < 3:
+            return []
+        before, cur, after = self.prev
+        # Background as of the middle frame, for the whole ball rather than the
+        # part that did not overlap its neighbors.
+        bg = self.backgrounds[1]
+        up = np.minimum(cur - before, cur - after)
+        moving = np.maximum(np.abs(cur - before), np.abs(cur - after)) > self.threshold
+        # Large moving regions are players (and their rackets); the ball near them is lost anyway.
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(moving.astype(np.uint8), connectivity=8)
+        big = np.isin(labels, np.flatnonzero(stats[:, cv2.CC_STAT_AREA] > self.player_area)[1:])
+        players = cv2.dilate(big.astype(np.uint8), np.ones((self.player_margin, self.player_margin), np.uint8))
+        mask = (up > self.threshold) & (players == 0)
+
+        n, labels, stats, centroids = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+        out = []
+        for i in range(1, n):
+            area = stats[i, cv2.CC_STAT_AREA]
+            if not (self.min_area <= area <= self.max_area):
+                continue
+            w, h = stats[i, cv2.CC_STAT_WIDTH], stats[i, cv2.CC_STAT_HEIGHT]
+            elongation = max(w, h) / max(1, min(w, h))
+            if elongation > 8:
+                continue
+            ys, xs = slice(stats[i, 1], stats[i, 1] + h), slice(stats[i, 0], stats[i, 0] + w)
+            region = labels[ys, xs] == i
+            contrast = float(up[ys, xs][region].mean())
+            cx, cy = self._center(cur, bg, stats[i], region, centroids[i])
+            score = min(1.0, 0.3 + contrast / 50) - 0.03 * (elongation - 1)
+            out.append(Candidate(cx, cy, score))
+        return out
+
+    def _center(self, cur, bg, stat, seed, fallback) -> tuple[float, float]:
+        """Brightness-weighted center of the ball's pixels that differ from the background."""
+        if bg is None:
+            return float(fallback[0]), float(fallback[1])
+        x0, y0, w, h = stat[0], stat[1], stat[2], stat[3]
+        pad = max(w, h)
+        ya, yb = max(0, y0 - pad), min(cur.shape[0], y0 + h + pad)
+        xa, xb = max(0, x0 - pad), min(cur.shape[1], x0 + w + pad)
+        lift = cur[ya:yb, xa:xb] - bg[ya:yb, xa:xb]
+        blob = (lift > self.threshold).astype(np.uint8)
+        n, labels = cv2.connectedComponents(blob, connectivity=8)
+        seed_labels = labels[y0 - ya : y0 - ya + h, x0 - xa : x0 - xa + w][seed]
+        seed_labels = seed_labels[seed_labels > 0]
+        if len(seed_labels) == 0:
+            return float(fallback[0]), float(fallback[1])
+        region = labels == np.bincount(seed_labels).argmax()
+        if region.sum() > 4 * self.max_area:
+            return float(fallback[0]), float(fallback[1])
+        yy, xx = np.nonzero(region)
+        weight = lift[region].astype(np.float64)
+        return xa + float((xx * weight).sum() / weight.sum()), ya + float((yy * weight).sum() / weight.sum())
+
+
 @dataclass
 class _Track:
     points: dict[int, tuple[float, float]] = field(default_factory=dict)
@@ -113,8 +204,9 @@ class BallTracker:
     be the ball rather than noise.
     """
 
-    def __init__(self, gate_px: float = 60.0, max_gap: int = 6, min_length: int = 6):
+    def __init__(self, gate_px: float = 60.0, max_gap: int = 6, min_length: int = 6, min_travel_px: float = 30.0):
         self.gate_px = gate_px
+        self.min_travel_px = min_travel_px
         self.max_gap = max_gap
         self.min_length = min_length
         self.tracks: list[_Track] = []
@@ -157,13 +249,57 @@ class BallTracker:
     def result(self, n_frames: int, interpolate: bool = False) -> np.ndarray:
         """(n_frames, 2) array of ball pixels, NaN where the ball was not seen."""
         out = np.full((n_frames, 2), np.nan)
-        tracks = [t for t in self.finished + self.tracks if len(t.points) >= self.min_length]
-        # Longer tracks win when two claim the same frame.
-        for tr in sorted(tracks, key=lambda t: len(t.points)):
-            for f, p in tr.points.items():
-                if f < n_frames:
-                    out[f] = p
+        pieces = [p for t in self.finished + self.tracks for p in self._smooth_pieces(t)]
+        pieces = [p for p in pieces if len(p) >= self.min_length and self._travels(p)]
+        # There is one ball: the longest smooth piece owns its time span, and
+        # weaker pieces keep only what lies outside it.
+        taken: list[tuple[int, int]] = []
+        for piece in sorted(pieces, key=len, reverse=True):
+            frames = [f for f in sorted(piece) if f < n_frames and not any(a <= f <= b for a, b in taken)]
+            if len(frames) < self.min_length:
+                continue
+            for f in frames:
+                out[f] = piece[f]
+            taken.append((frames[0], frames[-1]))
         return interpolate_gaps(out, self.max_gap) if interpolate else out
+
+    def _travels(self, piece: dict[int, tuple[float, float]]) -> bool:
+        """A ball in play goes somewhere; flicker in the crowd or on a sign stays put."""
+        p = np.array(list(piece.values()))
+        return bool(np.ptp(p, axis=0).max() >= self.min_travel_px)
+
+    @staticmethod
+    def _smooth_pieces(tr: _Track, max_skip: int = 3) -> list[dict[int, tuple[float, float]]]:
+        """Split a track into the stretches that move at a steady velocity.
+
+        With clutter around, a track that loses the ball can wander onto noise
+        and come back. A flying ball passes a three-frame constant-velocity check
+        everywhere but at its contacts, so points covered by a passing triple are
+        kept and the track is cut where they stop.
+        """
+        frames = np.array(sorted(tr.points))
+        p = np.array([tr.points[f] for f in frames])
+        good = np.zeros(len(p), bool)
+        for i in range(len(p) - 2):
+            if frames[i + 2] - frames[i] != 2:
+                continue
+            accel = np.linalg.norm(p[i + 2] - 2 * p[i + 1] + p[i])
+            if accel < max(4.0, 0.5 * np.linalg.norm(p[i + 2] - p[i + 1])):
+                good[i : i + 3] = True
+        pieces: list[dict[int, tuple[float, float]]] = []
+        current: dict[int, tuple[float, float]] = {}
+        last = None
+        for f, point, ok in zip(frames, p, good):
+            if not ok:
+                continue
+            if last is not None and f - last > max_skip:
+                pieces.append(current)
+                current = {}
+            current[int(f)] = (float(point[0]), float(point[1]))
+            last = f
+        if current:
+            pieces.append(current)
+        return pieces
 
 
 def interpolate_gaps(track: np.ndarray, max_gap: int) -> np.ndarray:

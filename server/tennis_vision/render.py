@@ -15,6 +15,7 @@ import cv2
 import numpy as np
 
 from .court import COURT_LINES, CourtHomography
+from .stabilize import apply
 
 TRAIL_FRAMES = 12
 CALL_SECONDS = 1.2
@@ -76,7 +77,9 @@ class _Writer:
             self.cv.release()
 
 
-def render_overlay(video_path: str, report: dict, out_path: str) -> str:
+def render_overlay(video_path: str, report: dict, out_path: str, show_score: bool = True) -> str:
+    """Draw the report onto the video. `show_score=False` leaves out the scoreboard and
+    point results, for clips cut out of a longer match where the score is unknown."""
     cap = cv2.VideoCapture(video_path)
     fps = report["video"]["fps"]
     ok, frame = cap.read()
@@ -86,7 +89,8 @@ def render_overlay(video_path: str, report: dict, out_path: str) -> str:
     s = max(w, h) / 1280  # scale drawing to the video size
 
     court = CourtHomography(np.array(report["court"]["corners_px"]))
-    court_lines = [court.to_image(np.array([a, b])).round().astype(int) for a, b in COURT_LINES]
+    court_pts = [court.to_image(np.array([a, b])) for a, b in COURT_LINES]
+    transforms = report.get("frame_transforms")
     track = {int(f): (x, y) for f, x, y in report["ball_track"]}
     names = {p: _label(n, p) for p, n in report["players"].items()}
     points = report["points"]
@@ -97,6 +101,11 @@ def render_overlay(video_path: str, report: dict, out_path: str) -> str:
     while ok:
         t = i / fps
         overlay = frame.copy()
+        if transforms and i < len(transforms):
+            m = np.array(transforms[i]).reshape(3, 3)
+            court_lines = [apply(m, p).round().astype(int) for p in court_pts]
+        else:
+            court_lines = [p.round().astype(int) for p in court_pts]
         for p in court_lines:
             cv2.line(overlay, tuple(p[0]), tuple(p[1]), YELLOW, max(1, int(s)), cv2.LINE_AA)
         frame = cv2.addWeighted(overlay, 0.35, frame, 0.65, 0)
@@ -118,8 +127,9 @@ def render_overlay(video_path: str, report: dict, out_path: str) -> str:
 
         done = [p for p in points if p["end_t"] <= t]
         score = done[-1]["score_after"] if done else None
-        _scoreboard(frame, score, names, s)
-        if done and t - done[-1]["end_t"] < RESULT_SECONDS:
+        if show_score:
+            _scoreboard(frame, score, names, s)
+        if show_score and done and t - done[-1]["end_t"] < RESULT_SECONDS:
             p = done[-1]
             who = f"{names[p['winner']]} WINS POINT - " if p["winner"] else ""
             speed = f"  serve {p['serve_speed_kmh']:.0f} km/h" if p.get("serve_speed_kmh") else ""
@@ -180,9 +190,10 @@ def main() -> None:
     ap.add_argument("video")
     ap.add_argument("report")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--no-score", action="store_true", help="draw only the ball, court and calls")
     args = ap.parse_args()
     out = args.out or str(Path(args.video).with_name(Path(args.video).stem + "_analyzed.mp4"))
-    render_overlay(args.video, json.loads(Path(args.report).read_text()), out)
+    render_overlay(args.video, json.loads(Path(args.report).read_text()), out, show_score=not args.no_score)
     print(out)
 
 
