@@ -11,7 +11,7 @@ import numpy as np
 
 from .ball import BallTracker, StreakDetector
 from .court import HALF_DW, HALF_L, SERVICE_LINE, CourtCamera, CourtHomography, Side, side_of
-from .court_detect import detect_court, line_mask
+from .court_detect import detect_court
 from .events import find_rallies
 from .scoring import Match, judge_point
 from .shots import miss_type, serve_zone, shot_direction
@@ -65,9 +65,7 @@ def analyze_video(path: str, options: Options | None = None, progress: Callable[
     detections: list[tuple[CourtHomography, float]] = []
     court_every = max(1, int(fps), total // COURT_SAMPLES)
 
-    # Painted lines and logos flicker slightly after alignment; never look for the ball on them.
-    static = cv2.dilate(line_mask(first_small), np.ones((5, 5), np.uint8))
-    detector = StreakDetector((size[1], size[0]), static)
+    detector = StreakDetector((size[1], size[0]))
     candidates = []
     frame_idx = 0
     frame = first_small

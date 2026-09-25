@@ -97,14 +97,15 @@ class StreakDetector:
     Broadcast and compressed 25-30 fps video blurs a fast ball into a faint
     grayish streak whose color is unreliable, but it is still lighter than the
     court it crosses. Comparing the middle of three frames with both neighbors
-    (signed, so dark shadows and ghosts drop out) isolates it; painted lines and
-    text that flicker with small alignment errors and moving players are masked.
+    (signed, so dark shadows and ghosts drop out) isolates it. Moving players are
+    masked out. Painted lines that flicker with small alignment errors fire in
+    the same places over and over, which the pipeline filters afterwards.
 
     `detect(frame)` returns the candidates of the previous frame, since it
     needs the next frame to decide.
     """
 
-    def __init__(self, frame_size: tuple[int, int], static: np.ndarray | None = None, threshold: int = 12):
+    def __init__(self, frame_size: tuple[int, int], threshold: int = 12):
         height, width = frame_size
         s = width / 1280
         self.min_area = max(2.0, 2 * s * s)
@@ -112,7 +113,6 @@ class StreakDetector:
         self.player_area = 400 * s * s
         self.player_margin = max(3, int(12 * s)) | 1
         self.threshold = threshold
-        self.static = static
         self.bg = cv2.createBackgroundSubtractorMOG2(history=150, varThreshold=24, detectShadows=False)
         self.prev: list[np.ndarray] = []
         self.backgrounds: list[np.ndarray | None] = []
@@ -140,8 +140,6 @@ class StreakDetector:
         big = np.isin(labels, np.flatnonzero(stats[:, cv2.CC_STAT_AREA] > self.player_area)[1:])
         players = cv2.dilate(big.astype(np.uint8), np.ones((self.player_margin, self.player_margin), np.uint8))
         mask = (up > self.threshold) & (players == 0)
-        if self.static is not None:
-            mask &= self.static == 0
 
         n, labels, stats, centroids = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
         out = []
@@ -251,42 +249,57 @@ class BallTracker:
     def result(self, n_frames: int, interpolate: bool = False) -> np.ndarray:
         """(n_frames, 2) array of ball pixels, NaN where the ball was not seen."""
         out = np.full((n_frames, 2), np.nan)
-        scored = [(self._smooth_steps(t), t) for t in self.finished + self.tracks if len(t.points) >= self.min_length]
-        tracks = [(ok, t) for ok, t in scored if self._is_ball(t, ok)]
-        # There is one ball: the track that follows a smooth path the longest owns
-        # its time span, and weaker tracks keep only what lies outside it.
+        pieces = [p for t in self.finished + self.tracks for p in self._smooth_pieces(t)]
+        pieces = [p for p in pieces if len(p) >= self.min_length and self._travels(p)]
+        # There is one ball: the longest smooth piece owns its time span, and
+        # weaker pieces keep only what lies outside it.
         taken: list[tuple[int, int]] = []
-        for ok, tr in sorted(tracks, key=lambda x: -sum(x[0])):
-            frames = [f for f in sorted(tr.points) if f < n_frames and not any(a <= f <= b for a, b in taken)]
+        for piece in sorted(pieces, key=len, reverse=True):
+            frames = [f for f in sorted(piece) if f < n_frames and not any(a <= f <= b for a, b in taken)]
             if len(frames) < self.min_length:
                 continue
             for f in frames:
-                out[f] = tr.points[f]
+                out[f] = piece[f]
             taken.append((frames[0], frames[-1]))
         return interpolate_gaps(out, self.max_gap) if interpolate else out
 
+    def _travels(self, piece: dict[int, tuple[float, float]]) -> bool:
+        """A ball in play goes somewhere; flicker in the crowd or on a sign stays put."""
+        p = np.array(list(piece.values()))
+        return bool(np.ptp(p, axis=0).max() >= self.min_travel_px)
+
     @staticmethod
-    def _smooth_steps(tr: _Track) -> list[bool]:
-        """For each run of three consecutive frames, whether the track moves at a steady velocity."""
+    def _smooth_pieces(tr: _Track, max_skip: int = 3) -> list[dict[int, tuple[float, float]]]:
+        """Split a track into the stretches that move at a steady velocity.
+
+        With clutter around, a track that loses the ball can wander onto noise
+        and come back. A flying ball passes a three-frame constant-velocity check
+        everywhere but at its contacts, so points covered by a passing triple are
+        kept and the track is cut where they stop.
+        """
         frames = np.array(sorted(tr.points))
         p = np.array([tr.points[f] for f in frames])
-        return [
-            bool(np.linalg.norm(p[i + 2] - 2 * p[i + 1] + p[i]) < max(4.0, 0.5 * np.linalg.norm(p[i + 2] - p[i + 1])))
-            for i in range(len(p) - 2)
-            if frames[i + 2] - frames[i] == 2
-        ]
-
-    def _is_ball(self, tr: _Track, ok: list[bool]) -> bool:
-        """A ball in play goes somewhere along a smooth path, passing the steady-velocity
-        check everywhere but at its contacts; flicker in the crowd, on a sign or on a
-        TV graphic stays put or hops around at random."""
-        p = np.array(list(tr.points.values()))
-        if np.ptp(p, axis=0).max() < self.min_travel_px:
-            return False
-        # Too few consecutive frames to judge means the track hopped between gaps.
-        if len(ok) < max(3, 0.3 * len(p)):
-            return False
-        return float(np.mean(ok)) >= 0.6
+        good = np.zeros(len(p), bool)
+        for i in range(len(p) - 2):
+            if frames[i + 2] - frames[i] != 2:
+                continue
+            accel = np.linalg.norm(p[i + 2] - 2 * p[i + 1] + p[i])
+            if accel < max(4.0, 0.5 * np.linalg.norm(p[i + 2] - p[i + 1])):
+                good[i : i + 3] = True
+        pieces: list[dict[int, tuple[float, float]]] = []
+        current: dict[int, tuple[float, float]] = {}
+        last = None
+        for f, point, ok in zip(frames, p, good):
+            if not ok:
+                continue
+            if last is not None and f - last > max_skip:
+                pieces.append(current)
+                current = {}
+            current[int(f)] = (float(point[0]), float(point[1]))
+            last = f
+        if current:
+            pieces.append(current)
+        return pieces
 
 
 def interpolate_gaps(track: np.ndarray, max_gap: int) -> np.ndarray:
