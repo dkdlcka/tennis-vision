@@ -505,6 +505,7 @@ class _Kink:
     v_in: np.ndarray
     v_out: np.ndarray
     drift_out: float  # image y travel over the piece after the kink (+ is down the screen)
+    toss_before: bool  # the piece before went straight up and came back down
 
 
 def detect_events_2d(
@@ -548,7 +549,10 @@ def detect_events_2d(
         ground = homography.to_court(img[None])[0]
         if abs(ground[0]) > HALF_DW + 1.5:
             continue  # off to the side of the court: the tracker was on something else
-        kinks.append(_Kink(float(tc), img, ground, v_in, v_out, float(uv[b - 1, 1] - uv[c, 1])))
+        before = uv[a:c]
+        top = int(np.argmin(before[:, 1]))
+        toss = 0 < top < len(before) - 1 and np.ptp(before[:, 0]) < 0.3 * np.ptp(before[:, 1])
+        kinks.append(_Kink(float(tc), img, ground, v_in, v_out, float(uv[b - 1, 1] - uv[c, 1]), bool(toss)))
     if not kinks:
         return []
 
@@ -563,10 +567,11 @@ def detect_events_2d(
             xy = (float(kink.ground[0]), HALF_L if far else -HALF_L)
         events.append(Event(kind, kink.frame, (float(kink.img[0]), float(kink.img[1])), xy))
 
-    # A serve seen from the toss: a slow, mostly vertical piece, then the ball
-    # leaves fast; it travels away (up the screen) from a near server.
+    # A serve seen from the toss: the ball goes straight up and falls back (or,
+    # seen late, is nearly still), then leaves fast; it travels away (up the
+    # screen) from a near server.
     first = kinks[0]
-    tossed = np.hypot(*first.v_in) < 0.2 * np.hypot(*first.v_out)
+    tossed = first.toss_before or np.hypot(*first.v_in) < 0.2 * np.hypot(*first.v_out)
     if tossed:
         add("hit", first, far=first.drift_out > 0)
         kinks = kinks[1:]
