@@ -43,3 +43,13 @@ def test_stats(report):
     assert a["aces"] == 1
     assert a["first_serves"] == 3 and a["first_serves_in"] == 2
     assert 80 < a["serve_speed_max_kmh"] < 140
+
+
+def test_shot_details(report):
+    b = report["bounces"]
+    assert b[0]["zone"] == "body"
+    assert b[3]["miss"] == "long"
+    assert b[4]["miss"] == "long"  # first serve of point 2 landed past the service line
+    assert b[-1]["zone"] == "wide"
+    assert report["stats"]["players"]["B"]["errors_long"] == 1
+    assert report["stats"]["players"]["A"]["serve_zones"] == {"wide": 1, "body": 2, "T": 0}

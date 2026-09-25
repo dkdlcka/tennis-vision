@@ -121,6 +121,8 @@ function Scoreboard({ score, names }: { score: ScoreState; names: Record<Player,
 function StatsTable({ a, b, names }: { a: PlayerStats; b: PlayerStats; names: Record<Player, string> }) {
   const pct = (v: number | null) => (v === null ? '-' : `${v}%`);
   const num = (v: number | null) => (v === null ? '-' : `${Math.round(v)}`);
+  const zones = (p: PlayerStats) => `${p.serve_zones.wide}/${p.serve_zones.body}/${p.serve_zones.T}`;
+  const dirs = (p: PlayerStats) => `${p.directions.cross}/${p.directions.line}/${p.directions.center}`;
   const rows: [string, string, string][] = [
     ['득점', `${a.points_won}`, `${b.points_won}`],
     ['퍼스트 서브 성공률', pct(a.first_serve_pct), pct(b.first_serve_pct)],
@@ -132,7 +134,9 @@ function StatsTable({ a, b, names }: { a: PlayerStats; b: PlayerStats; names: Re
     ['랠리 샷 인 비율', pct(a.rally_in_pct), pct(b.rally_in_pct)],
     ['깊은 샷 비율 (서비스라인 뒤)', pct(a.deep_pct), pct(b.deep_pct)],
     ['위너', `${a.winners}`, `${b.winners}`],
-    ['아웃 에러', `${a.errors_out}`, `${b.errors_out}`],
+    ['서브 코스 (와이드/바디/T)', zones(a), zones(b)],
+    ['샷 방향 (크로스/다운더라인/센터)', dirs(a), dirs(b)],
+    ['아웃 에러 (롱/와이드)', `${a.errors_long}/${a.errors_wide}`, `${b.errors_long}/${b.errors_wide}`],
     ['네트·투바운드 에러', `${a.errors_net_or_missed}`, `${b.errors_net_or_missed}`],
   ];
   return (

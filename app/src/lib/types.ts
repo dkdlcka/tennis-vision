@@ -45,6 +45,9 @@ export interface Bounce {
   kind: 'serve' | 'rally';
   hitter: Player;
   rally: number;
+  zone?: 'wide' | 'body' | 'T'; // serves that landed in
+  direction?: 'cross' | 'line' | 'center' | null; // rally shots
+  miss?: 'long' | 'wide' | 'net'; // out balls
 }
 
 export interface PlayerStats {
@@ -69,6 +72,11 @@ export interface PlayerStats {
   serve_speed_avg_kmh: number | null;
   serve_speed_max_kmh: number | null;
   shot_speed_avg_kmh: number | null;
+  serve_zones: { wide: number; body: number; T: number };
+  directions: { cross: number; line: number; center: number };
+  errors_long: number;
+  errors_wide: number;
+  errors_net: number;
 }
 
 export interface Report {

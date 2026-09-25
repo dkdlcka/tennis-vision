@@ -14,6 +14,7 @@ from .court import SERVICE_LINE, CourtHomography, side_of
 from .court_detect import detect_court
 from .events import find_rallies
 from .scoring import Match, judge_point
+from .shots import miss_type, serve_zone, shot_direction
 
 MAX_WIDTH = 1280
 
@@ -127,8 +128,24 @@ def build_report(rallies, track, homography, fps, n_frames, options: Options) ->
 
         # Who hit each ball: serve by the server, then the player opposite each bounce.
         bounce_ids = []
+        prev_frame = -1.0
         for ev, call in zip(bounce_events, result.calls):
             hitter = server if call.kind == "serve" else match.player_on(call.side.other)
+            # The last racket contact before this bounce, if the ball was seen leaving the racket.
+            contact = [e for e in rally.events if e.kind == "hit" and prev_frame < e.frame < ev.frame]
+            prev_frame = ev.frame
+            detail = {}
+            if call.kind == "serve":
+                if call.inside:
+                    detail["zone"] = serve_zone(call.x)
+                    stats[hitter]["serve_zones"][detail["zone"]] += 1
+            else:
+                detail["direction"] = shot_direction(contact[-1].court_xy[0] if contact else None, call.x)
+                if detail["direction"]:
+                    stats[hitter]["directions"][detail["direction"]] += 1
+            if not call.inside:
+                own_half = call.side is (server_side if call.kind == "serve" else match.side_of_player(hitter))
+                detail["miss"] = miss_type(call.x, call.y, call.kind == "serve", options.doubles, own_half)
             bounce_ids.append(len(bounces_out))
             bounces_out.append(
                 {
@@ -143,6 +160,7 @@ def build_report(rallies, track, homography, fps, n_frames, options: Options) ->
                     "kind": call.kind,
                     "hitter": hitter,
                     "rally": r_idx,
+                    **detail,
                 }
             )
             s = stats[hitter]
@@ -192,6 +210,8 @@ def build_report(rallies, track, homography, fps, n_frames, options: Options) ->
                 serve_stat["aces"] += 1
             if result.reason == "out":
                 stats[_other(winner)]["errors_out"] += 1
+                last = bounces_out[-1]
+                stats[_other(winner)][f"errors_{last['miss']}"] += 1
             if result.reason == "double_bounce":
                 stats[_other(winner)]["errors_net_or_missed"] += 1
             if result.reason == "winner":
@@ -263,6 +283,11 @@ def _empty_stats() -> dict:
         "errors_out": 0,
         "errors_net_or_missed": 0,
         "landing": [],
+        "serve_zones": {"wide": 0, "body": 0, "T": 0},
+        "directions": {"cross": 0, "line": 0, "center": 0},
+        "errors_long": 0,
+        "errors_wide": 0,
+        "errors_net": 0,
         "serve_speeds": [],
         "shot_speeds": [],
     }
