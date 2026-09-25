@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .court import CourtCamera, CourtHomography
+from .court import HALF_DW, HALF_L, CourtCamera, CourtHomography
 
 G = 9.81
 
@@ -429,12 +429,188 @@ def remove_spikes(track: np.ndarray, tol_px: float, span: int = 4) -> np.ndarray
 
 
 def find_rallies(
-    track: np.ndarray, homography: CourtHomography, fps: float, image_size: tuple[int, int]
+    track: np.ndarray,
+    homography: CourtHomography,
+    fps: float,
+    image_size: tuple[int, int],
+    method: str = "3d",
 ) -> list[Rally]:
+    """Rallies with their bounces and hits.
+
+    "3d" fits ballistic arcs through a camera recovered from the court, which
+    also gives speeds and net clearance. "2d" reads contacts from the image
+    track alone (`detect_events_2d`), for a camera looking straight down the
+    court, where that recovery is ill-conditioned.
+    """
     camera = CourtCamera(homography, image_size)
     track = remove_spikes(track, tol_px=max(6.0, 8.0 * image_size[0] / 1280))
     rallies = []
     for a, b in split_rallies(track, fps):
-        events, arcs = detect_events(track, a, b, homography, camera, fps)
-        rallies.append(Rally(a, b, events, arcs))
+        if method == "2d":
+            rallies.append(Rally(a, b, detect_events_2d(track, a, b, homography, 1.5 * image_size[0] / 1280)))
+        else:
+            events, arcs = detect_events(track, a, b, homography, camera, fps)
+            rallies.append(Rally(a, b, events, arcs))
     return rallies
+
+
+def _quad_sse(t: np.ndarray, uv: np.ndarray) -> float:
+    if len(t) < 4:
+        return 0.0
+    tc = t - t.mean()
+    a = np.stack([np.ones_like(tc), tc, tc * tc], axis=1)
+    sol, res, *_ = np.linalg.lstsq(a, uv, rcond=None)
+    return float(np.sum((a @ sol - uv) ** 2))
+
+
+def segment_2d(frames: np.ndarray, uv: np.ndarray, noise_px: float, min_len: int = 4, max_len: int = 90) -> list[int]:
+    """Splits an image track into smooth pieces (quadratic in time in both coordinates).
+
+    Optimal partition by dynamic programming: each piece costs its squared
+    residual plus a fixed price, so a break is only worth it where the path
+    really kinks. Returns the index where each piece after the first starts.
+    """
+    n = len(uv)
+    price = 30.0 * noise_px * noise_px
+    best = np.full(n + 1, np.inf)
+    best[0] = 0.0
+    back = np.zeros(n + 1, int)
+    for j in range(min_len, n + 1):
+        for i in range(max(0, j - max_len), j - min_len + 1):
+            if not np.isfinite(best[i]):
+                continue
+            c = best[i] + price + _quad_sse(frames[i:j], uv[i:j])
+            if c < best[j]:
+                best[j], back[j] = c, i
+    if not np.isfinite(best[n]):
+        return []
+    starts, j = [], n
+    while j > 0:
+        j = back[j]
+        if j > 0:
+            starts.append(j)
+    return sorted(starts)
+
+
+def _piece_velocity(t: np.ndarray, uv: np.ndarray, at: float) -> np.ndarray:
+    deg = 2 if len(t) >= 5 else 1
+    return np.array([np.polyval(np.polyder(np.polyfit(t - at, uv[:, k], deg)), 0.0) for k in (0, 1)])
+
+
+@dataclass
+class _Kink:
+    frame: float
+    img: np.ndarray
+    ground: np.ndarray
+    v_in: np.ndarray
+    v_out: np.ndarray
+    drift_out: float  # image y travel over the piece after the kink (+ is down the screen)
+
+
+def detect_events_2d(
+    track: np.ndarray, start: int, end: int, homography: CourtHomography, noise_px: float = 1.5
+) -> list[Event]:
+    """Bounces and hits from the image track alone, for a camera behind the near baseline.
+
+    Needs no 3D camera, which a camera looking straight down the court cannot
+    give reliably. The track is split into smooth pieces; each kink is a contact.
+
+    Far from the camera the ball's image motion is mostly its rise and fall: a
+    kink from falling to rising is a bounce, one from rising to falling (the
+    ball turned back toward the camera) is the far player's shot. Near the
+    camera, coming closer and falling both move the ball down the screen, so
+    near-side kinks are read from the order of play instead: the ball bounces,
+    then the near player hits it. The first kink is the serve.
+
+    A bounce happens on the ground, so its image point maps straight onto the
+    court. Racket contacts are placed at the hitter's baseline.
+    """
+    seg = track[start:end]
+    ok = ~np.isnan(seg[:, 0])
+    frames = np.arange(start, end)[ok].astype(np.float64)
+    uv = seg[ok]
+    if len(uv) < 8:
+        return []
+    cuts = segment_2d(frames, uv, noise_px)
+    bounds = [0, *cuts, len(uv)]
+    kinks: list[_Kink] = []
+    for k, c in enumerate(cuts):
+        a, b = bounds[k], bounds[k + 2]
+        tb, ta = frames[a:c], frames[c:b]
+        tc = (frames[c - 1] + frames[c]) / 2
+        v_in = _piece_velocity(tb, uv[a:c], tc)
+        v_out = _piece_velocity(ta, uv[c:b], tc)
+        if np.hypot(*(v_out - v_in)) < 0.25 * max(np.hypot(*v_in), np.hypot(*v_out)):
+            continue  # a gentle bend, not a contact
+        p_in = [np.polyval(np.polyfit(tb - tc, uv[a:c, j], min(2, len(tb) - 1)), 0.0) for j in (0, 1)]
+        p_out = [np.polyval(np.polyfit(ta - tc, uv[c:b, j], min(2, len(ta) - 1)), 0.0) for j in (0, 1)]
+        img = (np.array(p_in) + np.array(p_out)) / 2
+        ground = homography.to_court(img[None])[0]
+        if abs(ground[0]) > HALF_DW + 1.5:
+            continue  # off to the side of the court: the tracker was on something else
+        kinks.append(_Kink(float(tc), img, ground, v_in, v_out, float(uv[b - 1, 1] - uv[c, 1])))
+    if not kinks:
+        return []
+
+    events: list[Event] = []
+
+    def add(kind: str, kink: _Kink, far: bool) -> None:
+        if kind == "bounce":
+            if abs(kink.ground[1]) > HALF_L + 4:
+                return  # no ball lands that far back; the tracker was on something else
+            xy = (float(kink.ground[0]), float(kink.ground[1]))
+        else:
+            xy = (float(kink.ground[0]), HALF_L if far else -HALF_L)
+        events.append(Event(kind, kink.frame, (float(kink.img[0]), float(kink.img[1])), xy))
+
+    # A serve seen from the toss: a slow, mostly vertical piece, then the ball
+    # leaves fast; it travels away (up the screen) from a near server.
+    first = kinks[0]
+    tossed = np.hypot(*first.v_in) < 0.2 * np.hypot(*first.v_out)
+    if tossed:
+        add("hit", first, far=first.drift_out > 0)
+        kinks = kinks[1:]
+    near_group: list[_Kink] = []
+
+    def flush(next_is_far_bounce: bool, last: bool) -> None:
+        if len(near_group) >= 2:
+            add("bounce", near_group[0], far=False)
+            add("hit", near_group[-1], far=False)
+        elif near_group:
+            # One near-side kink: a volley if the ball next lands on the far
+            # side, the ball's final landing if nothing follows.
+            k = near_group[0]
+            add("hit" if next_is_far_bounce or (not last and k.v_out[1] < 0) else "bounce", k, far=False)
+        near_group.clear()
+
+    for k in kinks:
+        if k.ground[1] < 0.5:
+            near_group.append(k)
+            continue
+        falling_to_rising = k.v_in[1] > 0 and k.v_out[1] < 0
+        rising_to_falling = k.v_in[1] < 0 and k.v_out[1] > 0
+        far_bounce = falling_to_rising and k.ground[1] < HALF_L + 4
+        flush(next_is_far_bounce=far_bounce, last=False)
+        if far_bounce:
+            add("bounce", k, far=True)
+        elif rising_to_falling or k.ground[1] >= HALF_L + 4:
+            add("hit", k, far=True)
+    flush(next_is_far_bounce=False, last=True)
+    return _drop_impossible(events)
+
+
+def _drop_impossible(events: list[Event]) -> list[Event]:
+    """A bounce must land on the side opposite the last hitter (or where the ball already
+    bounced, for a second bounce); anything else is a misread kink."""
+    out: list[Event] = []
+    last_hit_side = None
+    for e in events:
+        side = "near" if e.court_xy[1] < 0 else "far"
+        if e.kind == "hit":
+            if out and out[-1].kind == "hit" and ("near" if out[-1].court_xy[1] < 0 else "far") == side:
+                continue  # the same player cannot hit twice in a row
+            last_hit_side = side
+        elif last_hit_side == side:
+            continue
+        out.append(e)
+    return out

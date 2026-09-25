@@ -9,7 +9,9 @@ The main camera may pan and zoom to follow play. It turns about a fixed point,
 so any two of its frames are related by a homography, measured from the
 background features they share. Every ball detection is mapped into the first
 frame of its shot; in those stabilized coordinates the shot looks like a fixed
-camera, and the usual 3D arc fitting, line calls and scoring apply unchanged.
+camera. A broadcast camera looks straight down the court, which leaves its 3D
+recovery ill-conditioned, so contacts are read from the image track instead
+(`events.detect_events_2d`); line calls and scoring then apply unchanged.
 """
 
 from __future__ import annotations
@@ -288,7 +290,7 @@ def analyze_broadcast(
     shot_out = []
     for k, shot in enumerate(shots):
         track, ref, followed = track_shot(cap, shot, size)
-        found = [_shift(r, shot.start) for r in find_rallies(track, ref, fps, size)]
+        found = [_shift(r, shot.start) for r in find_rallies(track, ref, fps, size, method="2d")]
         rallies.extend(found)
         shot_out.append(
             {
