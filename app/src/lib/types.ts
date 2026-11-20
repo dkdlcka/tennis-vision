@@ -94,6 +94,22 @@ export interface Report {
   video: { fps: number; frames: number; width: number; height: number };
   court: { source: 'auto' | 'manual'; score: number | null; corners_px: Point2[] };
   ball_track: [number, number, number][]; // frame, x, y in source pixels
+  highlights: Highlight[]; // best first
+  condensed: { segments: [number, number][]; duration_s: number; original_s: number | null };
+  reel_points: number[];
+  media?: { condensed: boolean; highlights: boolean }; // videos the server cut (needs ffmpeg there)
+}
+
+export type HighlightTag = 'ace' | 'winner' | 'long_rally' | 'close_call' | 'fastest_serve' | 'game_point';
+
+export interface Highlight {
+  point: number;
+  start_t: number;
+  end_t: number;
+  tags: HighlightTag[];
+  labels: string[];
+  score: number;
+  close_call_cm: number | null;
 }
 
 export interface AnalysisOptions {

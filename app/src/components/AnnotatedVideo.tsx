@@ -64,7 +64,7 @@ export const AnnotatedVideo = forwardRef<AnnotatedVideoHandle, Props>(function A
       style={styles.wrap}
       onLayout={(e: LayoutChangeEvent) => setBox({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })}
     >
-      <VideoView player={player} style={StyleSheet.absoluteFill} contentFit="contain" nativeControls />
+      <VideoView player={player} style={styles.fill} contentFit="contain" nativeControls />
       {scale > 0 && (
         <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
           {trail.length > 1 && <Polyline points={trail.join(' ')} stroke="#ffe600" strokeWidth={2} fill="none" opacity={0.8} />}
@@ -91,5 +91,7 @@ export const AnnotatedVideo = forwardRef<AnnotatedVideoHandle, Props>(function A
 });
 
 const styles = StyleSheet.create({
-  wrap: { width: '100%', aspectRatio: 16 / 9, backgroundColor: '#000' },
+  // Explicit size too: on web the <video> element ignores top/right/bottom/left stretching.
+  fill: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' },
+  wrap: { width: '100%', aspectRatio: 16 / 9, backgroundColor: '#000', overflow: 'hidden' },
 });
