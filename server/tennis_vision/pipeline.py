@@ -10,11 +10,13 @@ import cv2
 import numpy as np
 
 from .ball import BallTracker, MotionColorDetector
-from .court import SERVICE_LINE, CourtHomography, side_of
+from .court import HALF_L, SERVICE_LINE, CourtHomography, Side, side_of
 from .court_detect import detect_court
-from .events import find_rallies
+from .events import Event, Rally, find_rallies
+from .highlights import cut_video, editing_plan, reel_segments
 from .scoring import Match, judge_point
-from .shots import miss_type, serve_zone, shot_direction
+from .players import PLAYER_STRIDE, PersonDetector, PlayerTrack, PlayerTracker, default_detector, movement_stats
+from .shots import miss_type, serve_zone, shot_direction, shot_type, stroke_wing
 
 MAX_WIDTH = 1280
 
@@ -28,6 +30,8 @@ class Options:
     first_server: str = "A"
     a_starts_near: bool = True
     player_names: list[str] = field(default_factory=lambda: ["A", "B"])
+    handedness: list[str] = field(default_factory=lambda: ["right", "right"])  # A, B
+    detect_players: bool = True
 
 
 def _read_frames(path: str):
@@ -39,8 +43,18 @@ def _read_frames(path: str):
     return cap, fps, total
 
 
-def analyze_video(path: str, options: Options | None = None, progress: Callable[[float], None] | None = None) -> dict:
+_AUTO = object()
+
+
+def analyze_video(
+    path: str,
+    options: Options | None = None,
+    progress: Callable[[float], None] | None = None,
+    player_detector: PersonDetector | None | object = _AUTO,
+) -> dict:
     options = options or Options()
+    if player_detector is _AUTO:
+        player_detector = default_detector() if options.detect_players else None
     cap, fps, total = _read_frames(path)
     ok, first = cap.read()
     if not ok:
@@ -66,10 +80,13 @@ def analyze_video(path: str, options: Options | None = None, progress: Callable[
 
     detector = MotionColorDetector((size[1], size[0]))
     tracker = BallTracker(gate_px=60 * size[0] / 1280)
+    players = PlayerTracker(homography)
     frame_idx = 0
     frame = first_small
     while True:
         tracker.update(frame_idx, detector.detect(frame))
+        if player_detector is not None and frame_idx % PLAYER_STRIDE == 0:
+            players.update(frame_idx, player_detector.detect(frame))
         frame_idx += 1
         if progress and total and frame_idx % 30 == 0:
             progress(min(0.95, frame_idx / total))
@@ -82,7 +99,7 @@ def analyze_video(path: str, options: Options | None = None, progress: Callable[
     track = tracker.result(n_frames)
 
     rallies = find_rallies(track, homography, fps, size)
-    report = build_report(rallies, track, homography, fps, n_frames, options)
+    report = build_report(rallies, track, homography, fps, n_frames, options, players)
     report["video"] = {"fps": fps, "frames": n_frames, "width": src_w, "height": src_h, "analysis_scale": scale}
     report["court"] = {
         "source": court_source,
@@ -93,6 +110,7 @@ def analyze_video(path: str, options: Options | None = None, progress: Callable[
     report["ball_track"] = [
         [i, round(float(x / scale), 1), round(float(y / scale), 1)] for i, (x, y) in enumerate(track) if not np.isnan(x)
     ]
+    report.update(editing_plan(report, n_frames / fps))
     if progress:
         progress(1.0)
     return report
@@ -102,7 +120,9 @@ class CourtNotFound(ValueError):
     pass
 
 
-def build_report(rallies, track, homography, fps, n_frames, options: Options) -> dict:
+def build_report(
+    rallies, track, homography, fps, n_frames, options: Options, players: PlayerTracker | None = None
+) -> dict:
     match = Match(
         best_of=options.best_of,
         no_ad=options.no_ad,
@@ -112,6 +132,10 @@ def build_report(rallies, track, homography, fps, n_frames, options: Options) ->
     names = {"A": options.player_names[0], "B": options.player_names[1]}
     points = []
     bounces_out = []
+    shots_out = []
+    point_sides: list[tuple[int, int, dict]] = []  # (start, end frame, {player: side}) per point
+    bounce_id_of: dict[int, int] = {}
+    handed = {"A": options.handedness[0], "B": options.handedness[1]}
     stats = {p: _empty_stats() for p in ("A", "B")}
 
     for r_idx, rally in enumerate(rallies):
@@ -147,6 +171,7 @@ def build_report(rallies, track, homography, fps, n_frames, options: Options) ->
                 own_half = call.side is (server_side if call.kind == "serve" else match.side_of_player(hitter))
                 detail["miss"] = miss_type(call.x, call.y, call.kind == "serve", options.doubles, own_half)
             bounce_ids.append(len(bounces_out))
+            bounce_id_of[id(ev)] = len(bounces_out)
             bounces_out.append(
                 {
                     "id": len(bounces_out),
@@ -189,6 +214,57 @@ def build_report(rallies, track, homography, fps, n_frames, options: Options) ->
                     "height_m": round(ev.height_m, 2),
                 }
             )
+        point_sides.append((rally.start_frame, rally.end_frame, {p: match.side_of_player(p) for p in ("A", "B")}))
+        shot_ids = []
+        for k, sh in enumerate(_rally_shots(rally, server_side)):
+            hitter = match.player_on(sh["side"])
+            hit: Event | None = sh["hit"]
+            first = (
+                bounces_out[bounce_id_of[id(sh["bounces"][0])]]
+                if sh["bounces"] and id(sh["bounces"][0]) in bounce_id_of
+                else None
+            )
+            contact_xy = hit.court_xy if hit else None
+            if k == 0:
+                speed = serve_speed
+            else:
+                speed = hit.speed_kmh if hit else None
+            player_xy = None
+            if players is not None and sh["frame"] is not None:
+                player_xy = players.tracks[sh["side"]].at(sh["frame"])
+            wing = None
+            if player_xy is not None and contact_xy is not None and k > 0:
+                wing = stroke_wing(sh["side"] is Side.NEAR, player_xy[0], contact_xy[0], handed[hitter])
+            kind = shot_type(k, sh["volley"], hit.height_m if hit else None, wing)
+            shot = {
+                "id": len(shots_out),
+                "point": len(points),
+                "index": k,
+                "t": round(sh["frame"] / fps, 3) if sh["frame"] is not None else None,
+                "player": hitter,
+                "type": kind,
+                "wing": wing,
+                "speed_kmh": speed,
+                "contact_xy": [round(v, 2) for v in contact_xy] if contact_xy else None,
+                "contact_height_m": round(hit.height_m, 2) if hit else None,
+                "player_xy": [round(v, 2) for v in player_xy] if player_xy else None,
+                "bounce_id": first["id"] if first else None,
+                "bounce_xy": first["court_xy"] if first else None,
+                "in": first["in"] if first else None,
+                "depth": _depth(first["court_xy"][1]) if first and first["kind"] == "rally" and first["in"] else None,
+            }
+            for key in ("zone", "direction", "miss"):
+                if first and first.get(key):
+                    shot[key] = first[key]
+            shot_ids.append(shot["id"])
+            shots_out.append(shot)
+            by_type = stats[hitter]["by_type"].setdefault(kind, {"count": 0, "in": 0, "speeds": []})
+            by_type["count"] += 1
+            if shot["in"]:
+                by_type["in"] += 1
+            if speed is not None:
+                by_type["speeds"].append(speed)
+
         serve_stat = stats[server]
         serve_stat["serves"] += 1
         if was_second:
@@ -233,6 +309,7 @@ def build_report(rallies, track, homography, fps, n_frames, options: Options) ->
                 "bounce_ids": bounce_ids,
                 "serve_speed_kmh": serve_speed,
                 "hits": hits,
+                "shot_ids": shot_ids,
                 "net_clearance_m": rally.net_clearances(),
                 "score_after": match.display(),
             }
@@ -246,12 +323,19 @@ def build_report(rallies, track, homography, fps, n_frames, options: Options) ->
         s["serve_speed_avg_kmh"] = _avg(s["serve_speeds"])
         s["serve_speed_max_kmh"] = max(s["serve_speeds"], default=None)
         s["shot_speed_avg_kmh"] = _avg(s["shot_speeds"])
+        for t in s["by_type"].values():
+            t["in_pct"] = _pct(t["in"], t["count"])
+            t["speed_avg_kmh"] = _avg(t["speeds"])
+            t["speed_max_kmh"] = max(t["speeds"], default=None)
+            del t["speeds"]
+        s["movement"] = movement_stats(_player_track(players, point_sides, p), fps) if players is not None else None
 
     rally_lengths = [pt["shots"] for pt in points if pt["winner"]]
     return {
         "players": names,
         "points": points,
         "bounces": bounces_out,
+        "shots": shots_out,
         "score": match.display(),
         "stats": {
             "players": stats,
@@ -290,7 +374,43 @@ def _empty_stats() -> dict:
         "errors_net": 0,
         "serve_speeds": [],
         "shot_speeds": [],
+        "by_type": {},
     }
+
+
+def _rally_shots(rally: Rally, server_side: Side) -> list[dict]:
+    """Splits a rally into shots: who struck the ball, when, and where it bounced after.
+
+    A shot starts at the serve or at a racket contact. A bounce on the other half
+    after the ball already bounced means a contact the camera missed, so a new
+    shot starts there too, struck by the player on the half of the last bounce.
+    """
+    serve_frame = rally.arcs[0].start if rally.arcs else rally.start_frame
+    cur = {"frame": serve_frame, "side": server_side, "hit": None, "bounces": [], "volley": False}
+    shots = []
+    for ev in sorted(rally.events, key=lambda e: e.frame):
+        side = side_of(ev.court_xy[1])
+        if ev.kind == "hit":
+            if side is cur["side"] and not cur["bounces"]:
+                continue  # the ball hasn't crossed yet; a kink near the hitter, not a return
+            shots.append(cur)
+            cur = {"frame": ev.frame, "side": side, "hit": ev, "bounces": [], "volley": not cur["bounces"]}
+        elif cur["bounces"] and side is not side_of(cur["bounces"][-1].court_xy[1]):
+            shots.append(cur)
+            prev_side = side_of(cur["bounces"][-1].court_xy[1])
+            cur = {"frame": None, "side": prev_side, "hit": None, "bounces": [ev], "volley": False}
+        else:
+            cur["bounces"].append(ev)
+    shots.append(cur)
+    return shots
+
+
+def _depth(y: float) -> str:
+    """short (inside the service line), mid, or deep (within 2.74 m, three yards, of the baseline)."""
+    d = abs(y)
+    if d < SERVICE_LINE:
+        return "short"
+    return "deep" if d >= HALF_L - 2.74 else "mid"
 
 
 def _pct(a: int, b: int) -> float | None:
@@ -310,12 +430,18 @@ def main() -> None:
     ap.add_argument("--corners", help="NLx,NLy,NRx,NRy,FRx,FRy,FLx,FLy doubles corners in pixels")
     ap.add_argument("--doubles", action="store_true")
     ap.add_argument("--out", default="-")
+    ap.add_argument("--condensed", help="also write a video with only the points (dead time removed) here")
+    ap.add_argument("--highlights", help="also write a highlight reel video here")
     args = ap.parse_args()
     corners = None
     if args.corners:
         v = [float(x) for x in args.corners.split(",")]
         corners = [v[i : i + 2] for i in range(0, 8, 2)]
     report = analyze_video(args.video, Options(corners=corners, doubles=args.doubles))
+    if args.condensed and report["condensed"]["segments"]:
+        cut_video(args.video, report["condensed"]["segments"], args.condensed)
+    if args.highlights and report["reel_points"]:
+        cut_video(args.video, reel_segments(report), args.highlights)
     text = json.dumps(report, ensure_ascii=False, indent=2)
     if args.out == "-":
         print(text)
@@ -325,3 +451,16 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def _player_track(players: PlayerTracker, point_sides: list[tuple[int, int, dict]], player: str) -> PlayerTrack:
+    """One player's samples during points, from whichever end they played each point."""
+    out = PlayerTrack()
+    for start, end, sides in point_sides:
+        tr = players.tracks[sides[player]]
+        for f, xy, box in zip(tr.frames, tr.xy, tr.boxes, strict=True):
+            if start <= f <= end:
+                out.frames.append(f)
+                out.xy.append(xy)
+                out.boxes.append(box)
+    return out

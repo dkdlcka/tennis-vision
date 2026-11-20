@@ -21,3 +21,26 @@ def test_shot_direction():
     assert shot_direction(-3.0, -3.0) == "line"
     assert shot_direction(3.0, 0.4) == "center"
     assert shot_direction(None, 3.0) is None
+
+
+def test_stroke_wing():
+    from tennis_vision.shots import stroke_wing
+
+    # Near player faces the far end: ball at +x of the body is their right.
+    assert stroke_wing(True, player_x=0.0, ball_x=0.8) == "forehand"
+    assert stroke_wing(True, player_x=0.0, ball_x=-0.8) == "backhand"
+    # Far player faces the camera, so their right is at -x.
+    assert stroke_wing(False, player_x=0.0, ball_x=-0.8) == "forehand"
+    assert stroke_wing(False, player_x=0.0, ball_x=0.8) == "backhand"
+    assert stroke_wing(True, player_x=0.0, ball_x=0.8, handed="left") == "backhand"
+    assert stroke_wing(True, player_x=0.0, ball_x=0.05) is None
+
+
+def test_shot_type():
+    from tennis_vision.shots import shot_type
+
+    assert shot_type(0, False, None, None) == "serve"
+    assert shot_type(2, True, 2.6, "forehand") == "overhead"
+    assert shot_type(2, True, 1.2, "backhand") == "volley"
+    assert shot_type(1, False, 0.9, "backhand") == "backhand"
+    assert shot_type(1, False, None, None) == "stroke"

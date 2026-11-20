@@ -3,6 +3,9 @@
 POST /court/detect   a still frame -> detected court corners, for the app to confirm
 POST /analyses       upload a video (+ options) -> analysis id
 GET  /analyses/{id}  status, progress and, when done, the full report
+GET  /analyses/{id}/condensed.mp4      only the points, dead time removed
+GET  /analyses/{id}/highlights.mp4     the best points joined into one reel
+GET  /analyses/{id}/points/{n}.mp4     one point's clip (cut on first request)
 """
 
 from __future__ import annotations
@@ -17,8 +20,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 
 from .court_detect import detect_court
+from .highlights import cut_video, ffmpeg_available, point_segment, reel_segments
 from .pipeline import CourtNotFound, Options, analyze_video
 
 DATA_DIR = Path(os.environ.get("TENNIS_DATA_DIR", "./data"))
@@ -91,6 +96,7 @@ def _run(job_id: str, path: str, opts: Options) -> None:
         _jobs[job_id]["status"] = "running"
     try:
         report = analyze_video(path, opts, progress)
+        report["media"] = _cut_media(Path(path), report)
         (Path(path).parent / "report.json").write_text(json.dumps(report, ensure_ascii=False))
         with _lock:
             _jobs[job_id].update(status="done", progress=1.0)
@@ -100,3 +106,68 @@ def _run(job_id: str, path: str, opts: Options) -> None:
     except Exception as e:  # report every failure to the app instead of hanging
         with _lock:
             _jobs[job_id].update(status="error", error="analysis_failed", message=str(e))
+
+
+def _cut_media(src: Path, report: dict) -> dict:
+    """Cuts the condensed video and the highlight reel next to the upload. Never fails the analysis."""
+    media = {"condensed": False, "highlights": False}
+    if not ffmpeg_available():
+        return media
+    jobs = {"condensed": report["condensed"]["segments"], "highlights": reel_segments(report)}
+    for name, segments in jobs.items():
+        if not segments:
+            continue
+        try:
+            cut_video(src, segments, src.parent / f"{name}.mp4")
+            media[name] = True
+        except (RuntimeError, ValueError):
+            pass
+    return media
+
+
+def _job_dir(job_id: str) -> Path:
+    if not job_id.isalnum():
+        raise HTTPException(404, "unknown analysis")
+    d = DATA_DIR / job_id
+    if not (d / "report.json").exists():
+        raise HTTPException(404, "analysis not finished")
+    return d
+
+
+@app.get("/analyses/{job_id}/condensed.mp4")
+def condensed_video(job_id: str) -> FileResponse:
+    path = _job_dir(job_id) / "condensed.mp4"
+    if not path.exists():
+        raise HTTPException(404, "no condensed video")
+    return FileResponse(path, media_type="video/mp4")
+
+
+@app.get("/analyses/{job_id}/highlights.mp4")
+def highlights_video(job_id: str) -> FileResponse:
+    path = _job_dir(job_id) / "highlights.mp4"
+    if not path.exists():
+        raise HTTPException(404, "no highlights")
+    return FileResponse(path, media_type="video/mp4")
+
+
+@app.get("/analyses/{job_id}/points/{index}.mp4")
+def point_clip(job_id: str, index: int) -> FileResponse:
+    d = _job_dir(job_id)
+    report = json.loads((d / "report.json").read_text())
+    if not 0 <= index < len(report["points"]):
+        raise HTTPException(404, "no such point")
+    path = d / "clips" / f"point{index:03d}.mp4"
+    if not path.exists():
+        src = next((p for p in d.glob("video.*")), None)
+        if src is None or not ffmpeg_available():
+            raise HTTPException(404, "clip not available")
+        with _clip_lock:
+            if not path.exists():
+                try:
+                    cut_video(src, [point_segment(report, index)], path)
+                except RuntimeError as e:
+                    raise HTTPException(500, str(e))
+    return FileResponse(path, media_type="video/mp4")
+
+
+_clip_lock = threading.Lock()

@@ -1,17 +1,33 @@
 import { useRef, useState } from 'react';
 import { LayoutChangeEvent, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { REASON_LABEL } from '../lib/court';
+import { REASON_LABEL, SHOT_LABEL } from '../lib/court';
 import type { Player, PlayerStats, Report, ScoreState } from '../lib/types';
 import { AnnotatedVideo, AnnotatedVideoHandle } from './AnnotatedVideo';
 import { CourtDiagram } from './CourtDiagram';
+import { HighlightsPanel } from './HighlightsPanel';
+import { ShotsPanel } from './ShotsPanel';
 
-type Tab = 'points' | 'map' | 'stats';
+type Tab = 'shots' | 'points' | 'highlights' | 'map' | 'stats';
+const TAB_LABEL: Record<Tab, string> = {
+  shots: '샷',
+  points: '포인트',
+  highlights: '하이라이트',
+  map: '바운스 맵',
+  stats: '통계',
+};
 const PLAYER_COLOR: Record<Player, string> = { A: '#1e88e5', B: '#e53935' };
 
-export function ResultView({ report, videoUri }: { report: Report; videoUri: string }) {
+interface Props {
+  report: Report;
+  videoUri: string;
+  server: string;
+  analysisId: string;
+}
+
+export function ResultView({ report, videoUri, server, analysisId }: Props) {
   const video = useRef<AnnotatedVideoHandle>(null);
-  const [tab, setTab] = useState<Tab>('points');
+  const [tab, setTab] = useState<Tab>('shots');
   const [width, setWidth] = useState(0);
   const [selected, setSelected] = useState<number | null>(null);
   const [mapFilter, setMapFilter] = useState<Player | 'all'>('all');
@@ -33,11 +49,9 @@ export function ResultView({ report, videoUri }: { report: Report; videoUri: str
       <Scoreboard score={report.score} names={names} />
 
       <View style={styles.tabs}>
-        {(['points', 'map', 'stats'] as Tab[]).map((t) => (
+        {(Object.keys(TAB_LABEL) as Tab[]).map((t) => (
           <Pressable key={t} onPress={() => setTab(t)} style={[styles.tab, tab === t && styles.tabOn]}>
-            <Text style={tab === t ? styles.tabOnText : styles.tabText}>
-              {t === 'points' ? '포인트' : t === 'map' ? '바운스 맵' : '통계'}
-            </Text>
+            <Text style={tab === t ? styles.tabOnText : styles.tabText}>{TAB_LABEL[t]}</Text>
           </Pressable>
         ))}
       </View>
@@ -64,6 +78,10 @@ export function ResultView({ report, videoUri }: { report: Report; videoUri: str
             <Text style={styles.pointScore}>{p.score_after.points.join(' - ')}</Text>
           </Pressable>
         ))}
+
+      {tab === 'shots' && <ShotsPanel report={report} width={width} onSeek={(t) => video.current?.seek(t)} />}
+
+      {tab === 'highlights' && <HighlightsPanel report={report} server={server} analysisId={analysisId} />}
 
       {tab === 'map' && width > 0 && (
         <View style={{ gap: 10 }}>
@@ -139,6 +157,16 @@ function StatsTable({ a, b, names }: { a: PlayerStats; b: PlayerStats; names: Re
     ['아웃 에러 (롱/와이드)', `${a.errors_long}/${a.errors_wide}`, `${b.errors_long}/${b.errors_wide}`],
     ['네트·투바운드 에러', `${a.errors_net_or_missed}`, `${b.errors_net_or_missed}`],
   ];
+  const dist = (p: PlayerStats) => (p.movement?.distance_m != null ? `${Math.round(p.movement.distance_m)}m` : '-');
+  if (a.movement || b.movement) rows.push(['이동 거리 (포인트 중)', dist(a), dist(b)]);
+  for (const t of ['serve', 'forehand', 'backhand', 'volley', 'overhead'] as const) {
+    const x = a.by_type?.[t];
+    const y = b.by_type?.[t];
+    if (!x && !y) continue;
+    const cell = (v?: { count: number; in_pct: number | null; speed_avg_kmh: number | null }) =>
+      v ? `${v.count}개 · ${pct(v.in_pct)} · ${num(v.speed_avg_kmh)}` : '-';
+    rows.push([`${SHOT_LABEL[t]} (개수·인·평균 km/h)`, cell(x), cell(y)]);
+  }
   return (
     <View style={styles.table}>
       <View style={styles.tableRow}>
@@ -161,7 +189,7 @@ const styles = StyleSheet.create({
   page: { padding: 16, gap: 14, paddingBottom: 48 },
   muted: { fontSize: 13, color: '#666' },
   bold: { fontWeight: '700' },
-  tabs: { flexDirection: 'row', gap: 8 },
+  tabs: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   tab: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 20, backgroundColor: '#eef2ee' },
   tabOn: { backgroundColor: '#1b5e20' },
   tabText: { color: '#1b5e20', fontWeight: '600' },

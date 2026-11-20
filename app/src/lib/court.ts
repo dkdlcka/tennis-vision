@@ -33,3 +33,25 @@ export const REASON_LABEL: Record<string, string> = {
   double_bounce: '투 바운드 / 네트',
   winner: '위너',
 };
+
+export const SHOT_LABEL: Record<string, string> = {
+  serve: '서브',
+  forehand: '포핸드',
+  backhand: '백핸드',
+  volley: '발리',
+  overhead: '스매시',
+  stroke: '스트로크',
+};
+
+export const SHOT_COLOR: Record<string, string> = {
+  serve: '#8e24aa',
+  forehand: '#1e88e5',
+  backhand: '#fb8c00',
+  volley: '#00897b',
+  overhead: '#e53935',
+  stroke: '#757575',
+};
+
+export const DEPTH_LABEL: Record<string, string> = { short: '짧게', mid: '중간', deep: '깊게' };
+export const DIRECTION_LABEL: Record<string, string> = { cross: '크로스', line: '다운더라인', center: '센터' };
+export const ZONE_LABEL: Record<string, string> = { wide: '와이드', body: '바디', T: 'T' };

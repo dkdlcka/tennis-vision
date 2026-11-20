@@ -42,3 +42,12 @@ def test_detect_and_analyze(tmp_path, monkeypatch):
     assert report["court"]["source"] == "manual"
     assert report["players"]["A"] == "준호"
     assert [p["reason"] for p in report["points"]] == ["ace"]
+
+    assert report["media"] == {"condensed": True, "highlights": True}
+    assert report["highlights"][0]["tags"][0] == "ace"
+    for url in (f"/analyses/{job}/condensed.mp4", f"/analyses/{job}/highlights.mp4", f"/analyses/{job}/points/0.mp4"):
+        r = client.get(url)
+        assert r.status_code == 200 and r.headers["content-type"] == "video/mp4" and len(r.content) > 1000, url
+    r = client.get(f"/analyses/{job}/points/0.mp4", headers={"Range": "bytes=0-99"})
+    assert r.status_code == 206 and len(r.content) == 100
+    assert client.get(f"/analyses/{job}/points/5.mp4").status_code == 404

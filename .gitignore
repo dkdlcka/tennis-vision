@@ -5,3 +5,4 @@ __pycache__/
 server/data/
 *.mp4
 *.mov
+*.pt
