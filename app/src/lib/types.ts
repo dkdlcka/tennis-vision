@@ -29,6 +29,7 @@ export interface PointRecord {
   bounce_ids: number[];
   serve_speed_kmh: number | null;
   hits: { t: number; player: Player; speed_kmh: number; height_m: number }[];
+  shot_ids: number[];
   net_clearance_m: number[];
   score_after: ScoreState;
 }
@@ -48,6 +49,37 @@ export interface Bounce {
   zone?: 'wide' | 'body' | 'T'; // serves that landed in
   direction?: 'cross' | 'line' | 'center' | null; // rally shots
   miss?: 'long' | 'wide' | 'net'; // out balls
+}
+
+export type ShotType = 'serve' | 'forehand' | 'backhand' | 'volley' | 'overhead' | 'stroke';
+
+export interface Shot {
+  id: number;
+  point: number;
+  index: number; // 0 is the serve
+  t: number | null; // contact time; null when the camera missed the contact
+  player: Player;
+  type: ShotType;
+  wing: 'forehand' | 'backhand' | null;
+  speed_kmh: number | null;
+  contact_xy: Point2 | null; // court meters
+  contact_height_m: number | null;
+  player_xy: Point2 | null; // hitter's feet at contact
+  bounce_id: number | null;
+  bounce_xy: Point2 | null;
+  in: boolean | null;
+  depth: 'short' | 'mid' | 'deep' | null;
+  zone?: 'wide' | 'body' | 'T';
+  direction?: 'cross' | 'line' | 'center' | null;
+  miss?: 'long' | 'wide' | 'net';
+}
+
+export interface TypeStats {
+  count: number;
+  in: number;
+  in_pct: number | null;
+  speed_avg_kmh: number | null;
+  speed_max_kmh: number | null;
 }
 
 export interface PlayerStats {
@@ -77,12 +109,15 @@ export interface PlayerStats {
   errors_long: number;
   errors_wide: number;
   errors_net: number;
+  by_type: Partial<Record<ShotType, TypeStats>>;
+  movement: { distance_m: number | null; positions: Point2[] } | null; // null when players weren't detected
 }
 
 export interface Report {
   players: Record<Player, string>;
   points: PointRecord[];
   bounces: Bounce[];
+  shots: Shot[];
   score: ScoreState;
   stats: {
     players: Record<Player, PlayerStats>;
@@ -120,6 +155,7 @@ export interface AnalysisOptions {
   first_server: Player;
   a_starts_near: boolean;
   player_names: [string, string];
+  handedness?: ['right' | 'left', 'right' | 'left'];
 }
 
 export type AnalysisStatus =

@@ -1,14 +1,21 @@
 import { useRef, useState } from 'react';
 import { LayoutChangeEvent, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { REASON_LABEL } from '../lib/court';
+import { REASON_LABEL, SHOT_LABEL } from '../lib/court';
 import type { Player, PlayerStats, Report, ScoreState } from '../lib/types';
 import { AnnotatedVideo, AnnotatedVideoHandle } from './AnnotatedVideo';
 import { CourtDiagram } from './CourtDiagram';
 import { HighlightsPanel } from './HighlightsPanel';
+import { ShotsPanel } from './ShotsPanel';
 
-type Tab = 'points' | 'highlights' | 'map' | 'stats';
-const TAB_LABEL: Record<Tab, string> = { points: '포인트', highlights: '하이라이트', map: '바운스 맵', stats: '통계' };
+type Tab = 'shots' | 'points' | 'highlights' | 'map' | 'stats';
+const TAB_LABEL: Record<Tab, string> = {
+  shots: '샷',
+  points: '포인트',
+  highlights: '하이라이트',
+  map: '바운스 맵',
+  stats: '통계',
+};
 const PLAYER_COLOR: Record<Player, string> = { A: '#1e88e5', B: '#e53935' };
 
 interface Props {
@@ -20,7 +27,7 @@ interface Props {
 
 export function ResultView({ report, videoUri, server, analysisId }: Props) {
   const video = useRef<AnnotatedVideoHandle>(null);
-  const [tab, setTab] = useState<Tab>('points');
+  const [tab, setTab] = useState<Tab>('shots');
   const [width, setWidth] = useState(0);
   const [selected, setSelected] = useState<number | null>(null);
   const [mapFilter, setMapFilter] = useState<Player | 'all'>('all');
@@ -71,6 +78,8 @@ export function ResultView({ report, videoUri, server, analysisId }: Props) {
             <Text style={styles.pointScore}>{p.score_after.points.join(' - ')}</Text>
           </Pressable>
         ))}
+
+      {tab === 'shots' && <ShotsPanel report={report} width={width} onSeek={(t) => video.current?.seek(t)} />}
 
       {tab === 'highlights' && <HighlightsPanel report={report} server={server} analysisId={analysisId} />}
 
@@ -148,6 +157,16 @@ function StatsTable({ a, b, names }: { a: PlayerStats; b: PlayerStats; names: Re
     ['아웃 에러 (롱/와이드)', `${a.errors_long}/${a.errors_wide}`, `${b.errors_long}/${b.errors_wide}`],
     ['네트·투바운드 에러', `${a.errors_net_or_missed}`, `${b.errors_net_or_missed}`],
   ];
+  const dist = (p: PlayerStats) => (p.movement?.distance_m != null ? `${Math.round(p.movement.distance_m)}m` : '-');
+  if (a.movement || b.movement) rows.push(['이동 거리 (포인트 중)', dist(a), dist(b)]);
+  for (const t of ['serve', 'forehand', 'backhand', 'volley', 'overhead'] as const) {
+    const x = a.by_type?.[t];
+    const y = b.by_type?.[t];
+    if (!x && !y) continue;
+    const cell = (v?: { count: number; in_pct: number | null; speed_avg_kmh: number | null }) =>
+      v ? `${v.count}개 · ${pct(v.in_pct)} · ${num(v.speed_avg_kmh)}` : '-';
+    rows.push([`${SHOT_LABEL[t]} (개수·인·평균 km/h)`, cell(x), cell(y)]);
+  }
   return (
     <View style={styles.table}>
       <View style={styles.tableRow}>

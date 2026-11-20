@@ -13,6 +13,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.5"]
+players = ["ultralytics>=8.3"]  # person detection for shot types and movement
 
 [project.scripts]
 tennis-analyze = "tennis_vision.pipeline:main"

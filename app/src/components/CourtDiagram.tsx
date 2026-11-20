@@ -1,19 +1,21 @@
 import Svg, { Circle, Line, Rect } from 'react-native-svg';
 
 import { COURT, COURT_LINES } from '../lib/court';
-import type { Bounce } from '../lib/types';
+import type { Bounce, Point2 } from '../lib/types';
 
 interface Props {
   bounces: Bounce[];
   width: number;
   highlight?: number | null;
   colorFor?: (b: Bounce) => string;
+  /** Shot paths drawn under the bounces, from where the ball was struck to where it landed. */
+  paths?: { from: Point2; to: Point2; color: string; bold?: boolean }[];
 }
 
 const PAD = 3; // meters of run-off drawn around the court
 
 /** Top-down court with every bounce: filled when in, hollow when out. */
-export function CourtDiagram({ bounces, width, highlight, colorFor }: Props) {
+export function CourtDiagram({ bounces, width, highlight, colorFor, paths }: Props) {
   const wM = COURT.doublesWidth + 2 * PAD;
   const hM = COURT.length + 2 * PAD;
   const s = width / wM;
@@ -37,6 +39,18 @@ export function CourtDiagram({ bounces, width, highlight, colorFor }: Props) {
         <Line key={i} x1={X(a[0])} y1={Y(a[1])} x2={X(b[0])} y2={Y(b[1])} stroke="#fff" strokeWidth={1.5} />
       ))}
       <Line x1={X(-wM / 2 + 1)} y1={Y(0)} x2={X(wM / 2 - 1)} y2={Y(0)} stroke="#ddd" strokeWidth={3} />
+      {paths?.map((p, i) => (
+        <Line
+          key={`p${i}`}
+          x1={X(p.from[0])}
+          y1={Y(p.from[1])}
+          x2={X(p.to[0])}
+          y2={Y(p.to[1])}
+          stroke={p.bold ? '#ffe600' : p.color}
+          strokeWidth={p.bold ? 3 : 1.5}
+          opacity={p.bold ? 1 : 0.55}
+        />
+      ))}
       {bounces.map((b) => {
         const c = color(b);
         const big = b.id === highlight;

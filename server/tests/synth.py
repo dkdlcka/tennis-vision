@@ -184,3 +184,32 @@ def standard_match() -> list[ScriptedPoint]:
         ScriptedPoint(near_ad, [Shot((1.8, 4.8), 0.9), Shot((-1.5, -2.0), 0.8)], tail=1.0, double_bounce=True),
         ScriptedPoint(near_deuce, [Shot((-3.4, 5.5), 0.7)], tail=0.8),
     ]
+
+
+def player_x(frame: int, near: bool) -> float:
+    """Where render() draws each player across the court at `frame`."""
+    return 2.5 * np.sin(frame / 25 + (0.0 if near else 1.3))
+
+
+class SynthPlayers:
+    """A stand-in person detector that knows where render() drew the players.
+
+    Called on every PLAYER_STRIDE-th frame, as the pipeline does.
+    """
+
+    def __init__(self, cam: Camera, stride: int = 3):
+        self.cam = cam
+        self.stride = stride
+        self.calls = 0
+
+    def detect(self, frame):
+        i = self.calls * self.stride
+        self.calls += 1
+        out = []
+        for near, py in ((True, -HALF_L - 0.5), (False, HALF_L + 0.5)):
+            px = player_x(i, near)
+            feet = self.cam.project([(px, py, 0)])[0]
+            head = self.cam.project([(px, py, 1.8)])[0]
+            w = max(4, int((feet[1] - head[1]) * 0.3))
+            out.append((feet[0] - w, head[1], feet[0] + w, feet[1], 0.9))
+        return out
