@@ -36,3 +36,10 @@ export async function getAnalysis(server: string, id: string): Promise<AnalysisS
   if (!res.ok) throw new Error(`분석 상태 조회 실패 (${res.status})`);
   return res.json();
 }
+
+/** Videos the server cut from the upload after analysis. */
+export const mediaUrl = {
+  condensed: (server: string, id: string) => `${server}/analyses/${id}/condensed.mp4`,
+  highlights: (server: string, id: string) => `${server}/analyses/${id}/highlights.mp4`,
+  point: (server: string, id: string, index: number) => `${server}/analyses/${id}/points/${index}.mp4`,
+};

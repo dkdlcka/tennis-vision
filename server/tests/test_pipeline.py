@@ -53,3 +53,12 @@ def test_shot_details(report):
     assert b[-1]["zone"] == "wide"
     assert report["stats"]["players"]["B"]["errors_long"] == 1
     assert report["stats"]["players"]["A"]["serve_zones"] == {"wide": 1, "body": 2, "T": 0}
+
+
+def test_editing(report):
+    segs = report["condensed"]["segments"]
+    assert segs and report["condensed"]["duration_s"] < report["condensed"]["original_s"]
+    for p in report["points"]:
+        assert any(a <= p["start_t"] and p["end_t"] <= b for a, b in segs)
+    tags = {h["point"]: h["tags"] for h in report["highlights"]}
+    assert "ace" in tags[3]

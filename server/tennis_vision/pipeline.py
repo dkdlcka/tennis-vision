@@ -13,6 +13,7 @@ from .ball import BallTracker, MotionColorDetector
 from .court import SERVICE_LINE, CourtHomography, side_of
 from .court_detect import detect_court
 from .events import find_rallies
+from .highlights import cut_video, editing_plan, reel_segments
 from .scoring import Match, judge_point
 from .shots import miss_type, serve_zone, shot_direction
 
@@ -93,6 +94,7 @@ def analyze_video(path: str, options: Options | None = None, progress: Callable[
     report["ball_track"] = [
         [i, round(float(x / scale), 1), round(float(y / scale), 1)] for i, (x, y) in enumerate(track) if not np.isnan(x)
     ]
+    report.update(editing_plan(report, n_frames / fps))
     if progress:
         progress(1.0)
     return report
@@ -310,12 +312,18 @@ def main() -> None:
     ap.add_argument("--corners", help="NLx,NLy,NRx,NRy,FRx,FRy,FLx,FLy doubles corners in pixels")
     ap.add_argument("--doubles", action="store_true")
     ap.add_argument("--out", default="-")
+    ap.add_argument("--condensed", help="also write a video with only the points (dead time removed) here")
+    ap.add_argument("--highlights", help="also write a highlight reel video here")
     args = ap.parse_args()
     corners = None
     if args.corners:
         v = [float(x) for x in args.corners.split(",")]
         corners = [v[i : i + 2] for i in range(0, 8, 2)]
     report = analyze_video(args.video, Options(corners=corners, doubles=args.doubles))
+    if args.condensed and report["condensed"]["segments"]:
+        cut_video(args.video, report["condensed"]["segments"], args.condensed)
+    if args.highlights and report["reel_points"]:
+        cut_video(args.video, reel_segments(report), args.highlights)
     text = json.dumps(report, ensure_ascii=False, indent=2)
     if args.out == "-":
         print(text)

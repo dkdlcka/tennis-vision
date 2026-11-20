@@ -5,11 +5,20 @@ import { REASON_LABEL } from '../lib/court';
 import type { Player, PlayerStats, Report, ScoreState } from '../lib/types';
 import { AnnotatedVideo, AnnotatedVideoHandle } from './AnnotatedVideo';
 import { CourtDiagram } from './CourtDiagram';
+import { HighlightsPanel } from './HighlightsPanel';
 
-type Tab = 'points' | 'map' | 'stats';
+type Tab = 'points' | 'highlights' | 'map' | 'stats';
+const TAB_LABEL: Record<Tab, string> = { points: '포인트', highlights: '하이라이트', map: '바운스 맵', stats: '통계' };
 const PLAYER_COLOR: Record<Player, string> = { A: '#1e88e5', B: '#e53935' };
 
-export function ResultView({ report, videoUri }: { report: Report; videoUri: string }) {
+interface Props {
+  report: Report;
+  videoUri: string;
+  server: string;
+  analysisId: string;
+}
+
+export function ResultView({ report, videoUri, server, analysisId }: Props) {
   const video = useRef<AnnotatedVideoHandle>(null);
   const [tab, setTab] = useState<Tab>('points');
   const [width, setWidth] = useState(0);
@@ -33,11 +42,9 @@ export function ResultView({ report, videoUri }: { report: Report; videoUri: str
       <Scoreboard score={report.score} names={names} />
 
       <View style={styles.tabs}>
-        {(['points', 'map', 'stats'] as Tab[]).map((t) => (
+        {(Object.keys(TAB_LABEL) as Tab[]).map((t) => (
           <Pressable key={t} onPress={() => setTab(t)} style={[styles.tab, tab === t && styles.tabOn]}>
-            <Text style={tab === t ? styles.tabOnText : styles.tabText}>
-              {t === 'points' ? '포인트' : t === 'map' ? '바운스 맵' : '통계'}
-            </Text>
+            <Text style={tab === t ? styles.tabOnText : styles.tabText}>{TAB_LABEL[t]}</Text>
           </Pressable>
         ))}
       </View>
@@ -64,6 +71,8 @@ export function ResultView({ report, videoUri }: { report: Report; videoUri: str
             <Text style={styles.pointScore}>{p.score_after.points.join(' - ')}</Text>
           </Pressable>
         ))}
+
+      {tab === 'highlights' && <HighlightsPanel report={report} server={server} analysisId={analysisId} />}
 
       {tab === 'map' && width > 0 && (
         <View style={{ gap: 10 }}>
@@ -161,7 +170,7 @@ const styles = StyleSheet.create({
   page: { padding: 16, gap: 14, paddingBottom: 48 },
   muted: { fontSize: 13, color: '#666' },
   bold: { fontWeight: '700' },
-  tabs: { flexDirection: 'row', gap: 8 },
+  tabs: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   tab: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 20, backgroundColor: '#eef2ee' },
   tabOn: { backgroundColor: '#1b5e20' },
   tabText: { color: '#1b5e20', fontWeight: '600' },

@@ -11,12 +11,14 @@ export default function Analysis() {
   const { id, uri } = useLocalSearchParams<{ id: string; uri: string }>();
   const [status, setStatus] = useState<AnalysisStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [server, setServer] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
     (async () => {
       const server = await getServerUrl();
+      if (alive) setServer(server);
       const poll = async () => {
         try {
           const s = await getAnalysis(server, id);
@@ -38,7 +40,8 @@ export default function Analysis() {
     };
   }, [id]);
 
-  if (status?.status === 'done') return <ResultView report={status.report} videoUri={uri} />;
+  if (status?.status === 'done' && server)
+    return <ResultView report={status.report} videoUri={uri} server={server} analysisId={id} />;
 
   return (
     <View style={styles.center}>
