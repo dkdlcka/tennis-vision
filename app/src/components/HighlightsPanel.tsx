@@ -98,7 +98,7 @@ function ClipPlayer({ url }: { url: string }) {
   const player = useVideoPlayer(url, (p) => p.play());
   return (
     <View style={styles.video}>
-      <VideoView player={player} style={StyleSheet.absoluteFill} contentFit="contain" nativeControls />
+      <VideoView player={player} style={styles.fill} contentFit="contain" nativeControls />
     </View>
   );
 }
@@ -117,6 +117,8 @@ function fmt(seconds: number) {
 }
 
 const styles = StyleSheet.create({
+  // Explicit size too: on web the <video> element ignores top/right/bottom/left stretching.
+  fill: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' },
   video: { width: '100%', aspectRatio: 16 / 9, backgroundColor: '#000', borderRadius: 8, overflow: 'hidden' },
   row: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   muted: { fontSize: 13, color: '#666' },
